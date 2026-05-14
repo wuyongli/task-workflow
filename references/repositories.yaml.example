@@ -1,0 +1,89 @@
+repositories:
+  - key: "producer-backend"
+    path: "/Users/wuyongli/Documents/sg-project/producer-backend"
+    remote: "git@example.com:group/producer-backend.git"
+    notes: "Main backend repo"
+    runtime:
+      mode: "shared-backend-app"
+      copy_missing_from_main:
+        - "pfsource/settings.py"
+      copy_missing_from_template:
+        - source: "pfsource/settings_local.py"
+          target: "pfsource/settings.py"
+      task_env_file: "docker/.task.env"
+      task_compose_file: "docker/docker-compose.task.yml"
+      task_app_image: "pf-app:latest"
+      shared_front_network: "pf_front-tier"
+      shared_back_network: "pf_back-tier"
+      app_port_start: 18897
+      app_port_end: 18996
+      auto_start_on_prepare: true
+      auto_start_steps:
+        - cwd: "/path/to/main/producer-backend/docker"
+          command: "docker compose up -d mysql redis rabbitmq mongo"
+        - cwd: "/path/to/main/producer-backend/docker"
+          command: "docker compose up -d nginx"
+          allow_failure: true
+        - cwd: "__TASK_DOCKER_DIR__"
+          command: "docker compose --env-file .task.env -f docker-compose.task.yml up -d app"
+      install_commands:
+        - "pip install -r requirements.txt"
+      start_commands:
+        - "cd /path/to/main/producer-backend/docker && docker compose up -d mysql redis rabbitmq mongo"
+        - "cd /path/to/main/producer-backend/docker && docker compose up -d nginx"
+        - "cd docker && docker compose --env-file .task.env -f docker-compose.task.yml up -d app"
+      notes:
+        - "Copy local settings from the main repo when the task clone does not have them."
+        - "Generate task-scoped compose files that only start the app container against shared infra."
+        - "Prefer reusing a prebuilt local app image such as pf-app:latest when available."
+
+  - key: "pf-mproducer-supplier"
+    path: "/Users/wuyongli/Documents/sg-project/pf-mproducer-supplier"
+    remote: "git@example.com:group/pf-mproducer-supplier.git"
+    notes: "Related mobile frontend repo"
+    runtime:
+      mode: "patch-node-frontend-environment"
+      task_env_file: ".codex/task-runtime.env"
+      task_port_key: "TASK_WEB_PORT"
+      app_port_start: 3009
+      app_port_end: 3049
+      copy_missing_from_main:
+        - ".codex/environments/environment.toml"
+        - "src/setupProxy.js"
+        - "vite.proxy.config.mjs"
+      environment_toml: ".codex/environments/environment.toml"
+      producer_proxy_config_file: "vite.proxy.config.mjs"
+      local_backend_repo_key: "producer-backend"
+      backend_task_env_file: "docker/.task.env"
+      install_commands:
+        - "npm install"
+      start_commands:
+        - "npm run start"
+      notes:
+        - "Patch the copied environment.toml so the task clone uses its own current package.json and Node version."
+        - "Generate a task-scoped .codex/task-runtime.env so each task clone keeps a stable frontend port."
+        - "Patch vite.proxy.config.mjs so LOCAL_PRODUCER_PROXY_TARGET_ADDRESS points to the sibling backend task port."
+
+  - key: "pf-producer-supplier"
+    path: "/Users/wuyongli/Documents/sg-project/pf-producer-supplier"
+    remote: "git@example.com:group/pf-producer-supplier.git"
+    notes: "Related PC frontend repo"
+    runtime:
+      mode: "patch-node-frontend-environment"
+      task_env_file: ".codex/task-runtime.env"
+      task_port_key: "TASK_WEB_PORT"
+      app_port_start: 3109
+      app_port_end: 3149
+      copy_missing_from_main:
+        - ".env.development"
+      copy_missing_from_template:
+        - source: ".env.development.example"
+          target: ".env.development"
+      environment_toml: ".codex/environments/environment.toml"
+      install_commands:
+        - "npm install"
+      start_commands:
+        - "npm run dev"
+      notes:
+        - "Patch the task repo environment.toml when it already exists."
+        - "Generate a task-scoped .codex/task-runtime.env so each task clone keeps a stable frontend port."

@@ -1,0 +1,22 @@
+workspace_root: "/Users/wuyongli/Documents/sg-project/_workspace"
+tasks_root: "/Users/wuyongli/Documents/sg-project/_workspace/_tasks"
+docs_root: "/Users/wuyongli/Documents/sg-project/_workspace/_docs"
+config_root: "/Users/wuyongli/Documents/sg-project/_workspace/config"
+task_name_pattern: "YYYY-MM-DD-task-name"
+repo_dir_pattern: "repo-key__raw-task-name"
+default_branch_mode: "raw-task-name"
+branch_name_sanitization: "minimal-git-safe"
+clone_source_mode: "remote"
+cleanup_requires_remote_sync: true
+
+documents:
+  index: "index.md"
+  plan: "plan.md"
+  progress: "progress.md"
+
+task_statuses:
+  - "方案中"
+  - "开发中"
+  - "测试中"
+  - "暂停中"
+  - "已完成"
