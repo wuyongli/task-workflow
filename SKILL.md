@@ -1,6 +1,6 @@
 ---
 name: task-workflow
-description: Use when the user mentions 新任务、多仓库任务、任务工作区、继续任务、恢复任务上下文、任务进度、任务完成, or needs to create, continue, pause, resume, complete, clean up, or inspect a multi-repo task under /Users/wuyongli/Documents/sg-project/_workspace.
+description: Use when the user mentions 新任务、多仓库任务、任务工作区、继续任务、恢复任务上下文、任务进度、任务完成, or needs to create, continue, complete, clean up, or inspect a multi-repo task under /Users/wuyongli/Documents/sg-project/_workspace.
 ---
 
 # 任务工作流
@@ -105,43 +105,14 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_ru
 - `方案中`
 - `开发中`
 - `测试中`
-- `暂停中`
 - `已完成`
 
-### 5. Pause
-
-用于任务暂停一段时间，但不删除任务代码。
-
-规则：
-- allow pause only from `方案中` / `开发中` / `测试中`
-- pause only changes task status and keeps all task repos in place
-
-推荐命令：
-
-```bash
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/pause_task_workspace.py "YYYY-MM-DD-原始任务名"
-```
-
-### 6. Resume
-
-用于暂停中的任务继续恢复开发。
-
-规则：
-- allow resume only from `暂停中`
-- resume only restores task status; repos stay in the same task path
-
-推荐命令：
-
-```bash
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/resume_task_workspace.py "YYYY-MM-DD-原始任务名"
-```
-
-### 7. Complete
+### 5. Complete
 
 用于编码和自测完成后标记任务完成。
 
 规则：
-- allow complete only from active statuses or `暂停中`
+- allow complete only from `方案中` / `开发中` / `测试中`
 - require each recorded repo to be clean and pushed before marking complete
 - keep task docs under `_docs/<task-id>`
 - keep task code under `_tasks/<task-id>` until cleanup
@@ -152,7 +123,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/resume_task_wor
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/complete_task_workspace.py "YYYY-MM-DD-原始任务名"
 ```
 
-### 8. Cleanup
+### 6. Cleanup
 
 用于任务已完成，并且需要清理任务代码目录的时候。
 
@@ -168,7 +139,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/complete_task_w
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/cleanup_task_workspace.py "YYYY-MM-DD-原始任务名"
 ```
 
-### 9. Status
+### 7. Status
 
 用于用户想快速查看任务状态和任务仓库路径。
 

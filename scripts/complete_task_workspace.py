@@ -33,7 +33,7 @@ def main() -> int:
     require_remote_sync = bool(workspace_cfg.get("cleanup_requires_remote_sync", True))
 
     meta_path, meta = load_task_meta(docs_root, args.task_id)
-    require_task_status(meta, ("方案中", "开发中", "测试中", "暂停中"), "complete")
+    require_task_status(meta, ("方案中", "开发中", "测试中"), "complete")
 
     failed = False
     repos = meta.get("repos", [])
@@ -59,7 +59,6 @@ def main() -> int:
         return 2
 
     meta["status"] = "已完成"
-    meta["resume_status"] = "已完成"
     save_yaml(meta_path, meta, args.dry_run)
 
     index_path = docs_root / args.task_id / documents.get("index", "index.md")

@@ -228,7 +228,6 @@ def main() -> int:
         meta = {
             "task_id": task_id,
             "status": "方案中",
-            "resume_status": "开发中",
             "repos": repo_meta_rows,
         }
         save_yaml(task_docs_root / "meta.yaml", meta, args.dry_run)
