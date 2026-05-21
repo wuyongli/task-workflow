@@ -39,7 +39,10 @@ def main() -> int:
             continue
         _meta_path, meta = load_task_meta(docs_root, task_dir.name)
         status = str(meta.get("status") or "未知")
-        print(f"- {task_dir.name} [{status}]")
+        resume_status = str(meta.get("resume_status") or status)
+        coding_allowed = bool(meta.get("coding_allowed", False))
+        coding_text = "yes" if coding_allowed else "no"
+        print(f"- {task_dir.name} [status={status}, resume={resume_status}, coding_allowed={coding_text}]")
         repos = meta.get("repos", [])
         if not isinstance(repos, list):
             continue

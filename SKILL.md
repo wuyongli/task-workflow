@@ -83,10 +83,18 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_ru
 
 用于在新会话里恢复任务上下文。
 
-默认读取顺序：
-1. `index.md`
-2. 当需要任务目标或方案细节时读 `plan.md`
-3. 当需要当前进展、自测结果或阻塞时读 `progress.md`
+默认恢复协议：
+1. 先读 `meta.yaml`
+2. 用 `meta.yaml` 确认任务状态、仓库绑定、记录分支、恢复状态等机器事实
+3. 再读 `index.md` 获取给人看的当前摘要
+4. 当需要任务目标或方案细节时读 `plan.md`
+5. 当需要当前进展、自测结果或阻塞时读 `progress.md`
+
+恢复任务时的协作原则：
+- `meta.yaml` 是 AI 恢复上下文时的第一事实入口，不是补充校验文件
+- `index.md` 是给人读的摘要页，不负责定义机器事实
+- 如果 `index.md` 与 `meta.yaml` 不一致，优先以 `meta.yaml` 为准，再在同一轮把摘要文档修正到一致
+- 如果没有先读 `meta.yaml`，就不要声称已经完成任务状态核对、仓库绑定核对或记录分支核对
 
 路径查找规则：
 - 如果当前仓库路径匹配 `_tasks/<task-id>/<repo-dir>`，就直接从 `<task-id>` 反查任务
@@ -97,10 +105,19 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_ru
 
 用于任务已经推进，文档也需要同步更新的时候。
 
-更新规则：
+默认更新协议：
+1. 先判断这次更新是否影响机器事实
+2. 如果影响了任务状态、`resume_status`、仓库绑定、记录分支，先更新 `meta.yaml`
+3. 再更新 `index.md` 的当前摘要
+4. 再更新 `progress.md` 的过程记录
+5. `plan.md` 只在方案发生变化时更新
+
+更新原则：
 - `index.md` 只保留当前快照
 - `plan.md` 只保留当前有效方案
 - `progress.md` 记录实际进展、验证结果、阻塞与变更历史
+- `meta.yaml` 保存最小机器事实
+- 不允许让 `index.md` 比 `meta.yaml` 更“新”
 
 任务状态固定为：
 - `方案中`
@@ -116,7 +133,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_ru
 - 需求分析与方案讨论
 - 读取代码、配置、文档，评估当前系统现状
 - 输出和完善开发方案
-- 更新 `index.md`、`plan.md`、`progress.md`
+- 更新 `index.md`、`plan.md`、`progress.md`、`meta.yaml`
 - 给出实现建议、改动清单、验证建议、风险提示
 
 当任务处于 `方案中` 时，AI 不可以做：
@@ -196,7 +213,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/status_task_wor
 ### `index.md`
 
 用途：
-- AI 恢复上下文时的第一入口
+- AI 恢复上下文时的人类可读摘要入口
 - 只保留当前快照
 
 必须包含：
@@ -205,8 +222,12 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/status_task_wor
 - current conclusion
 - current blocker
 - next step
-- recorded repo paths and actual branches
-- links to `plan.md` and `progress.md`
+- links to `meta.yaml`、`plan.md` and `progress.md`
+
+同步要求：
+- `index.md` 中的状态和下一步是给人读的摘要，不是机器事实定义
+- 仓库路径、记录分支、恢复状态等机器事实优先放在 `meta.yaml`
+- 如果摘要中引用了机器事实，必须与 `meta.yaml` 保持一致
 
 使用模板：[index.md](references/index.md)
 
@@ -215,8 +236,12 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/status_task_wor
 用途：
 - 产品方案和开发方案放在一个地方
 - 只保留当前有效方案，不保留讨论过程
-- 同时作为“是否允许开始代码工作”的准入记录
+- 同时作为“是否允许开始代码工作”的判断依据和说明记录
 - 当产品方案已确认但开发方案未完成时，仍然属于 `方案中`
+
+说明：
+- `plan.md` 负责记录为什么可以或不可以开工
+- 最终机器状态应写入 `meta.yaml`，不要让 `plan.md` 独自承担机器事实
 
 使用模板：[plan.md](references/plan.md)
 
@@ -234,12 +259,18 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/status_task_wor
 用途：
 - 通过路径把一个文档目录和一个任务代码目录绑定起来
 - 记录最小的、可机器读取的仓库绑定与分支信息
+- AI 恢复任务上下文时的第一事实入口
 
 规则：
 - `meta.yaml` 是任务绑定的机器可读事实来源
+- `meta.yaml` 也是 AI 恢复任务上下文时的第一事实入口
 - 优先记录 `repo_dir` 或相对任务路径；绝对路径只保留兼容用途
-- `index.md` 保持可读，但其中的路径和分支必须和 `meta.yaml` 一致
-- `meta.yaml` 尽量最小化，只保留 `task_id`、任务状态、以及每个仓库的 `key`、`repo_dir`、`branch`
+- `index.md` 保持可读，但只做摘要展示，不应重复承担完整机器事实记录
+- `meta.yaml` 尽量最小化，但应完整承载任务机器事实
+- 最低字段应包含：`task_id`、`status`、`resume_status`、`coding_allowed`、以及每个仓库的 `key`、`repo_dir`、`branch`
+- 只要任务状态、`resume_status`、仓库路径或记录分支发生变化，必须优先更新 `meta.yaml`，再确保 `index.md` 与之对齐
+- 当一次更新同时涉及 `index.md` 与 `meta.yaml` 时，视 `meta.yaml` 为最终机器事实，不要反过来只根据 `index.md` 推断
+- 除非 `meta.yaml` 缺失或损坏，否则恢复上下文时必须先读它，再读其他任务文档
 
 ## 运行配置
 

@@ -59,6 +59,7 @@ def main() -> int:
         return 2
 
     meta["status"] = "已完成"
+    meta["resume_status"] = "已完成"
     save_yaml(meta_path, meta, args.dry_run)
 
     index_path = docs_root / args.task_id / documents.get("index", "index.md")

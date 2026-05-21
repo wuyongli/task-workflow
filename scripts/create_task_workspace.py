@@ -25,37 +25,23 @@ from task_workflow_lib import (
 DEFAULT_CONFIG_ROOT = Path("/Users/wuyongli/Documents/sg-project/_workspace/config")
 
 
-def render_index(task_name: str, repo_rows: list[tuple[str, str, str]]) -> str:
+def render_index(task_name: str) -> str:
     lines = [
         f"# {task_name}",
         "",
         "## 任务摘要",
         "- 当前状态：方案中",
-        "- 是否允许开始代码工作：否",
         f"- 一句话目标：{task_name}",
         "- 当前结论：待补充",
         "- 当前阻塞：无",
         "- 下一步：补充计划并等待明确开发指令",
         "",
-        "## 仓库上下文",
+        "## 文档导航",
+        "- 事实文件：./meta.yaml",
+        "- 计划文档：./plan.md",
+        "- 进度文档：./progress.md",
+        "",
     ]
-    for repo_key, rel_path, branch_name in repo_rows:
-        lines.extend(
-            [
-                f"- {repo_key}",
-                f"  - 路径：{rel_path}",
-                f"  - 分支：{branch_name}",
-            ]
-        )
-    lines.extend(
-        [
-            "",
-            "## 文档导航",
-            "- 计划文档：./plan.md",
-            "- 进度文档：./progress.md",
-            "",
-        ]
-    )
     return "\n".join(lines)
 
 
@@ -92,6 +78,7 @@ def render_plan(task_name: str, repo_keys: list[str]) -> str:
 - 自测与回归计划：
 
 ## 开发准入确认
+- 说明：本节记录判断依据，最终机器状态以 `meta.yaml` 为准
 - 方案是否已确认：未确认
 - 开发方案是否已补齐：未补齐
 - 是否允许开始代码工作：未允许
@@ -201,7 +188,6 @@ def main() -> int:
             task_docs_root.mkdir(parents=True, exist_ok=False)
             created_paths.extend([task_code_root, task_docs_root])
 
-        repo_rows: list[tuple[str, str, str]] = []
         repo_meta_rows: list[dict[str, str]] = []
         for repo_key in args.repos:
             repo_cfg = repo_map[repo_key]
@@ -222,8 +208,6 @@ def main() -> int:
             except subprocess.CalledProcessError as exc:
                 auto_start_error = str(exc)
 
-            rel_task_path = Path("..") / ".." / "_tasks" / task_id / repo_dir_name
-            repo_rows.append((repo_key, str(rel_task_path), branch_name))
             repo_meta_rows.append(
                 {
                     "key": repo_key,
@@ -258,13 +242,15 @@ def main() -> int:
         plan_name = documents.get("plan", "plan.md")
         progress_name = documents.get("progress", "progress.md")
 
-        write_text(task_docs_root / index_name, render_index(raw_task_name, repo_rows), args.dry_run)
+        write_text(task_docs_root / index_name, render_index(raw_task_name), args.dry_run)
         write_text(task_docs_root / plan_name, render_plan(raw_task_name, args.repos), args.dry_run)
         write_text(task_docs_root / progress_name, render_progress(raw_task_name), args.dry_run)
 
         meta = {
             "task_id": task_id,
             "status": "方案中",
+            "resume_status": "方案中",
+            "coding_allowed": False,
             "repos": repo_meta_rows,
         }
         save_yaml(task_docs_root / "meta.yaml", meta, args.dry_run)
