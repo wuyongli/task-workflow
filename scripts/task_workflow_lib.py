@@ -153,6 +153,9 @@ def prepare_repo_from_default(repo_path: Path, remote: str, branch_name: str, dr
     run(["git", "-C", str(repo_path), "fetch", "origin", "--prune"], dry_run)
     base_branch = resolve_default_branch(repo_path, dry_run)
     run(["git", "-C", str(repo_path), "checkout", "-B", branch_name, f"origin/{base_branch}"], dry_run)
+    # Use the remote default branch only as the latest starting point.
+    # The task branch should not inherit upstream tracking from origin/<base_branch>.
+    run(["git", "-C", str(repo_path), "branch", "--unset-upstream"], dry_run)
 
 
 def require_task_status(task_meta: dict[str, Any], allowed_statuses: tuple[str, ...], action: str) -> str:

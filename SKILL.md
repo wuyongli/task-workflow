@@ -52,7 +52,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/init_workspace.
 1. 规范化 task id 为 `YYYY-MM-DD-<任务名>`
 2. 创建 `_tasks/<task-id>` 和 `_docs/<task-id>`
 3. 把每个选中的仓库 clone 到 `_tasks/<task-id>/<repo>__<task-name>`
-4. 基于远端默认分支创建或重置任务分支
+4. 基于远端默认分支最新提交创建或重置任务分支
 5. 从主仓库或任务仓库模板补齐缺失的本地运行配置
 6. 生成 `index.md`、`plan.md`、`progress.md`、`meta.yaml`
 
@@ -70,6 +70,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/create_task_wor
 运行说明：
 - `create_task_workspace.py` will only补齐缺失的本地运行配置，不会覆盖 task clone 里已有文件
 - 不会自动安装依赖
+- 任务分支只以远端默认分支作为起点，不自动跟踪 `origin/master` 或其他默认分支；首次推送任务分支时再建立自己的 upstream
 - 对于 `producer-backend`，还会生成任务级 Docker 辅助文件，让每个任务都能只启动自己的 `app` 容器，同时复用共享基础设施
 - 当 `repositories.yaml` 开启 `auto_start_on_prepare` 时，运行配置准备阶段也会执行配置里的自动启动步骤
 - 如果主仓本地配置后续发生变化，可以重新执行：
@@ -106,6 +107,33 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_ru
 - `开发中`
 - `测试中`
 - `已完成`
+
+### 开发准入闸门
+
+默认情况下，新任务创建后状态为 `方案中`。
+
+当任务处于 `方案中` 时，AI 可以做：
+- 需求分析与方案讨论
+- 读取代码、配置、文档，评估当前系统现状
+- 输出和完善开发方案
+- 更新 `index.md`、`plan.md`、`progress.md`
+- 给出实现建议、改动清单、验证建议、风险提示
+
+当任务处于 `方案中` 时，AI 不可以做：
+- 直接修改业务代码、配置、SQL、脚本
+- 安装依赖、执行迁移、启动正式实现
+- 把“先看下/先分析/先给方案/先评估”理解为允许开始开发
+
+只有同时满足以下条件，才允许从 `方案中` 进入 `开发中`：
+1. `plan.md` 中的产品方案已经确认
+2. `plan.md` 中已经补齐明确的开发方案，达到可执行状态，关键待确认项已经收敛到不影响开工
+3. 用户明确表达允许开始代码工作，例如“可以开始开发”“开始改代码”“按这个方案做”
+
+如果用户没有明确授权开始代码工作，即使 AI 已经完成方案分析，也必须停留在 `方案中`。
+
+如果恢复的是一个已存在任务：
+- 当状态是 `方案中`，默认继续分析、补方案、补文档，不直接开工编码
+- 当状态是 `开发中` 或 `测试中`，可以继续既有实现与验证工作，除非用户明确要求回到方案讨论
 
 ### 5. Complete
 
@@ -187,6 +215,8 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/status_task_wor
 用途：
 - 产品方案和开发方案放在一个地方
 - 只保留当前有效方案，不保留讨论过程
+- 同时作为“是否允许开始代码工作”的准入记录
+- 当产品方案已确认但开发方案未完成时，仍然属于 `方案中`
 
 使用模板：[plan.md](references/plan.md)
 
