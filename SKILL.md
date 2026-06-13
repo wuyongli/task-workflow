@@ -1,6 +1,6 @@
 ---
 name: task-workflow
-description: Use when the user mentions 新任务、多仓库任务、任务工作区、继续任务、恢复任务上下文、任务进度、任务完成、发布测试服、publish、同步远程主线、sync, or needs to create, continue, publish, sync, complete, clean up, or inspect a multi-repo task under /Users/wuyongli/Documents/sg-project/_workspace.
+description: Use when the user mentions 新任务、多仓库任务、任务工作区、继续任务、恢复任务上下文、任务进度、任务完成、发布测试服、publish、同步远程主线、sync、任务地址、端口导航、本地开发地址, or needs to create, continue, publish, sync, inspect, open task dev URLs, complete, or clean up a multi-repo task under /Users/wuyongli/Documents/sg-project/_workspace.
 ---
 
 # 任务工作流
@@ -268,6 +268,37 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/cleanup_task_wo
 ```bash
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/status_task_workspace.py
 ```
+
+### 10. Portal
+
+用于在浏览器里快速查看当前开发中任务对应的手机端、PC 端和后端端口，不再手工记忆任务与端口的映射关系。
+
+常用入口：
+
+1. 静态快照页
+
+```bash
+python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/render_task_dev_portal.py
+```
+
+默认输出：
+- `/Users/wuyongli/Documents/sg-project/_workspace/task-dev-portal.html`
+
+2. 刷新即最新的本地页
+
+```bash
+python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/serve_task_dev_portal.py
+```
+
+默认地址：
+- `http://127.0.0.1:8765/`
+
+关键规则：
+- 页面数据来自 `_docs/*/meta.yaml`、前端 `.codex/task-runtime.env`、后端 `docker/.task.env`
+- 手机端地址默认展示为 `http://pfzone.senguo.me:<port>/mproducer/`
+- PC 端地址默认展示为 `http://pfzone.senguo.me:<port>/producer/`
+- 如果你只想手动刷新页面拿到最新状态，用本地页即可；浏览器每次刷新都会重新读取最新任务、分支和端口
+- 如果只需要一个可分享或临时保存的快照页，再使用静态导出脚本
 
 ## 文档模型
 

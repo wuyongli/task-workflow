@@ -5,11 +5,15 @@ from __future__ import annotations
 import socket
 import subprocess
 import tempfile
+import threading
 import unittest
+import urllib.request
 from pathlib import Path
 from unittest import mock
 
 import publish_task_workspace as publish_script
+import render_task_dev_portal as portal_script
+import serve_task_dev_portal as portal_server_script
 import sync_task_workspace as sync_script
 import task_workflow_lib as lib
 
@@ -384,6 +388,56 @@ class SyncTaskTests(unittest.TestCase):
         self.assertIn("git merge failed against origin/master", result["reason"])
         self.assertIn("CONFLICT (content)", result["stdout"])
         self.assertEqual(run_git_command.call_count, 2)
+
+
+class TaskPortalTests(unittest.TestCase):
+    def test_build_frontend_url_uses_pfzone_host(self) -> None:
+        self.assertEqual(
+            portal_script.build_frontend_url("mobile_frontend", "3018"),
+            "http://pfzone.senguo.me:3018/mproducer/",
+        )
+        self.assertEqual(
+            portal_script.build_frontend_url("pc_frontend", "3110"),
+            "http://pfzone.senguo.me:3110/producer/",
+        )
+
+    def test_portal_server_rerenders_on_every_request(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_root = Path(tmpdir) / "config"
+            config_root.mkdir(parents=True)
+            (config_root / "workspace.yaml").write_text(
+                'workspace_root: "/tmp/workspace"\n'
+                'tasks_root: "/tmp/workspace/_tasks"\n'
+                'docs_root: "/tmp/workspace/_docs"\n',
+                encoding="utf-8",
+            )
+            output_path = Path("/tmp/workspace/task-dev-portal.html")
+            call_count = 0
+
+            def fake_build_portal_html(*, config_root, output_path, include_completed):
+                nonlocal call_count
+                call_count += 1
+                return (f"<html><body>render-{call_count}</body></html>", 1)
+
+            with mock.patch.object(portal_server_script, "build_portal_html", side_effect=fake_build_portal_html):
+                server = portal_server_script.ThreadingHTTPServer(
+                    ("127.0.0.1", 0),
+                    portal_server_script.make_handler(config_root, output_path),
+                )
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    base_url = f"http://127.0.0.1:{server.server_port}/"
+                    first = urllib.request.urlopen(base_url, timeout=5).read().decode("utf-8")
+                    second = urllib.request.urlopen(base_url, timeout=5).read().decode("utf-8")
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join(timeout=5)
+
+        self.assertIn("render-1", first)
+        self.assertIn("render-2", second)
+        self.assertEqual(call_count, 2)
 
 
 if __name__ == "__main__":

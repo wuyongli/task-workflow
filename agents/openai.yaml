@@ -1,7 +1,7 @@
 interface:
   display_name: "Task Workflow"
-  short_description: "Manage task-scoped repo clones, docs, runtime bootstrap, publish, and mainline sync actions"
-  default_prompt: "Use $task-workflow to create, continue, publish, sync, complete, clean up, inspect, or prepare runtime for a multi-repo task under /Users/wuyongli/Documents/sg-project/_workspace."
+  short_description: "Manage task-scoped repo clones, docs, runtime bootstrap, publish, sync, and task URL portal actions"
+  default_prompt: "Use $task-workflow to create, continue, publish, sync, inspect task URLs and ports, serve the dev portal, complete, clean up, or prepare runtime for a multi-repo task under /Users/wuyongli/Documents/sg-project/_workspace."
 
 policy:
   allow_implicit_invocation: true
