@@ -14,6 +14,20 @@ import yaml
 from pypinyin import lazy_pinyin
 
 
+PUBLISH_TARGET_ALIASES: dict[str, set[str]] = {
+    "backend": {"产地后端", "后端", "产地通后端", "backend"},
+    "frontend": {"产地前端", "前端", "frontend"},
+    "mobile_frontend": {"产地手机前端", "手机前端", "手机端", "移动端", "产地通手机前端", "mobilefrontend"},
+    "pc_frontend": {"产地pc前端", "pc前端", "pc端", "产地通pc前端", "pcfrontend"},
+}
+
+PUBLISH_KIND_ORDER = {
+    "backend": 0,
+    "mobile_frontend": 1,
+    "pc_frontend": 2,
+}
+
+
 def sanitize_task_segment(raw_name: str) -> str:
     name = raw_name.strip()
     name = re.sub(r"[\r\n\t]+", " ", name)
@@ -69,6 +83,134 @@ def build_task_compose_name(task_id: str) -> str:
 
 def build_repo_dir_name(repo_key: str, raw_task_name: str) -> str:
     return f"{repo_key}__{raw_task_name}"
+
+
+def normalize_publish_target(raw_target: str) -> str:
+    target = raw_target.strip().lower()
+    target = re.sub(r"\s+", "", target)
+    if not target:
+        raise ValueError("publish target is empty")
+    return target
+
+
+def resolve_publish_target_kind(raw_target: str) -> str:
+    normalized = normalize_publish_target(raw_target)
+    for target_kind, aliases in PUBLISH_TARGET_ALIASES.items():
+        normalized_aliases = {normalize_publish_target(alias) for alias in aliases}
+        if normalized in normalized_aliases:
+            return target_kind
+    supported = "、".join(sorted(alias for aliases in PUBLISH_TARGET_ALIASES.values() for alias in aliases))
+    raise ValueError(f"unknown publish target: {raw_target}. supported targets: {supported}")
+
+
+def ordered_target_kinds(target_kinds: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for target_kind in target_kinds:
+        if target_kind in seen:
+            continue
+        seen.add(target_kind)
+        unique.append(target_kind)
+    return sorted(unique, key=lambda item: (PUBLISH_KIND_ORDER.get(item, 99), item))
+
+
+def normalize_requested_target_kinds(target_kinds: list[str]) -> list[str]:
+    ordered = ordered_target_kinds(target_kinds)
+    unique = set(ordered)
+    if "frontend" in unique and {"mobile_frontend", "pc_frontend"}.issubset(unique):
+        ordered = [item for item in ordered if item != "frontend"]
+    return ordered
+
+
+def resolve_requested_repo_keys(
+    raw_targets: list[str],
+    bound_repo_keys: list[str],
+    repo_cfg_by_key: dict[str, dict[str, Any]],
+) -> list[str]:
+    if not raw_targets:
+        return list(bound_repo_keys)
+
+    target_kinds = normalize_requested_target_kinds([resolve_publish_target_kind(target) for target in raw_targets])
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for target_kind in target_kinds:
+        repo_key = resolve_task_publish_repo_key(target_kind, bound_repo_keys, repo_cfg_by_key)
+        if repo_key in seen:
+            continue
+        seen.add(repo_key)
+        resolved.append(repo_key)
+    return resolved
+
+
+def classify_repo_publish_kind(repo_cfg: dict[str, Any]) -> str | None:
+    repo_key = str(repo_cfg.get("key") or "")
+    repo_path = str(repo_cfg.get("path") or "")
+    notes = str(repo_cfg.get("notes") or "")
+    runtime = repo_cfg.get("runtime")
+    runtime_mode = ""
+    if isinstance(runtime, dict):
+        runtime_mode = str(runtime.get("mode") or "")
+
+    combined = " ".join([repo_key, repo_path, notes, runtime_mode]).lower()
+
+    if runtime_mode == "shared-backend-app" or "后端" in notes or "backend" in combined:
+        return "backend"
+
+    if runtime_mode == "patch-node-frontend-environment":
+        if "手机" in notes or "mobile" in combined or "mproducer" in combined:
+            return "mobile_frontend"
+        if "pc" in notes.lower() or "pc" in combined:
+            return "pc_frontend"
+
+    return None
+
+
+def resolve_task_publish_repo_key(
+    target_kind: str,
+    bound_repo_keys: list[str],
+    repo_cfg_by_key: dict[str, dict[str, Any]],
+) -> str:
+    if target_kind == "frontend":
+        frontend_matches: list[str] = []
+        for repo_key in bound_repo_keys:
+            repo_cfg = repo_cfg_by_key.get(repo_key)
+            if repo_cfg is None:
+                continue
+            if classify_repo_publish_kind(repo_cfg) in {"mobile_frontend", "pc_frontend"}:
+                frontend_matches.append(repo_key)
+
+        if len(frontend_matches) == 1:
+            return frontend_matches[0]
+        if not frontend_matches:
+            raise ValueError("no bound repo matches generic frontend publish target")
+        raise ValueError(
+            "generic frontend target is ambiguous; please specify 手机前端 or PC前端"
+        )
+
+    matches: list[str] = []
+    for repo_key in bound_repo_keys:
+        repo_cfg = repo_cfg_by_key.get(repo_key)
+        if repo_cfg is None:
+            continue
+        if classify_repo_publish_kind(repo_cfg) == target_kind:
+            matches.append(repo_key)
+
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise ValueError(f"no bound repo matches publish target kind: {target_kind}")
+    raise ValueError(f"multiple bound repos match publish target kind {target_kind}: {', '.join(matches)}")
+
+
+def resolve_publish_command(repo_cfg: dict[str, Any]) -> list[str]:
+    repo_key = str(repo_cfg.get("key") or "")
+    target_kind = classify_repo_publish_kind(repo_cfg)
+    if target_kind == "backend":
+        return ["sg", "publish", "jenkins"]
+    if target_kind in {"mobile_frontend", "pc_frontend"}:
+        return ["sg", "publish", "local"]
+
+    raise ValueError(f"repo {repo_key or '<unknown>'} has no supported publish command mapping")
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
@@ -555,12 +697,6 @@ def _rewrite_node_frontend_environment(
     environment_rel_path = str(runtime_cfg.get("environment_toml", ".codex/environments/environment.toml"))
     environment_path = repo_path / environment_rel_path
 
-    if not environment_path.exists():
-        return {
-            "generated_files": [],
-            "notes": [f"未找到 {environment_rel_path}，跳过任务仓库启动文件修正"],
-        }
-
     effective_start_command = _rewrite_frontend_start_command(package_json, start_commands[0], assigned_port)
 
     write_text(
@@ -630,6 +766,73 @@ def _patch_local_producer_proxy_target(
     return {
         "generated_files": [proxy_rel_path],
         "notes": [f"{proxy_rel_path} 已对齐本地后端端口：{port}"],
+    }
+
+
+def _patch_frontend_local_backend_env(
+    runtime_cfg: dict[str, Any],
+    repo_path: Path,
+    dry_run: bool,
+) -> dict[str, list[str]]:
+    env_rel_path = str(runtime_cfg.get("local_backend_env_file") or "").strip()
+    if not env_rel_path:
+        return {"generated_files": [], "notes": []}
+
+    task_root = repo_path.parent
+    backend_repo_key = str(runtime_cfg.get("local_backend_repo_key", "producer-backend"))
+    backend_repo_path = _find_task_repo_path(task_root, backend_repo_key)
+    if backend_repo_path is None:
+        return {
+            "generated_files": [],
+            "notes": [f"未找到同任务后端仓库 {backend_repo_key}，跳过 {env_rel_path} 本地后端修正"],
+        }
+
+    backend_env_rel = str(runtime_cfg.get("backend_task_env_file", "docker/.task.env"))
+    backend_env = _parse_env_file(backend_repo_path / backend_env_rel)
+    port = backend_env.get("TASK_APP_HOST_PORT")
+    if not port:
+        return {
+            "generated_files": [],
+            "notes": [f"未找到后端任务端口配置 {backend_env_rel}，跳过 {env_rel_path} 本地后端修正"],
+        }
+
+    env_path = repo_path / env_rel_path
+    if not env_path.exists():
+        return {
+            "generated_files": [],
+            "notes": [f"未找到 {env_rel_path}，跳过本地后端修正"],
+        }
+
+    proxy_host = str(runtime_cfg.get("local_backend_proxy_host", "localhost"))
+    api_host = str(runtime_cfg.get("local_backend_api_host", "pfzone.senguo.cc"))
+    proxy_target = f"http://{proxy_host}:{port}"
+    api_target = f"http://{api_host}:{port}"
+
+    text = env_path.read_text(encoding="utf-8")
+    updated = re.sub(
+        r'(^VITE_DEV_PROXY_TARGET\s*=\s*")[^"]*(".*$)',
+        rf'\g<1>{proxy_target}\g<2>',
+        text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    updated = re.sub(
+        r'(^VITE_PF_API_URL\s*=\s*")[^"]*(".*$)',
+        rf'\g<1>{api_target}\g<2>',
+        updated,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    if updated == text:
+        return {
+            "generated_files": [],
+            "notes": [f"{env_rel_path} 中未匹配到本地后端相关字段，跳过修正"],
+        }
+
+    write_text(env_path, updated, dry_run)
+    return {
+        "generated_files": [env_rel_path],
+        "notes": [f"{env_rel_path} 已对齐本地后端地址：{proxy_target} / {api_target}"],
     }
 
 
@@ -778,6 +981,9 @@ def prepare_repo_runtime(repo_cfg: dict[str, Any], repo_path: Path, dry_run: boo
         proxy_patch = _patch_local_producer_proxy_target(runtime_cfg, repo_path, dry_run)
         generated_files.extend(proxy_patch["generated_files"])
         generated_notes.extend(proxy_patch["notes"])
+        env_patch = _patch_frontend_local_backend_env(runtime_cfg, repo_path, dry_run)
+        generated_files.extend(env_patch["generated_files"])
+        generated_notes.extend(env_patch["notes"])
 
     return {
         "copied_from_main": copied_from_main,
@@ -835,6 +1041,30 @@ def read_current_branch(repo_path: Path) -> str:
         return "not-a-git-repo"
     branch = run_git(repo_path, "branch", "--show-current")
     return branch or "detached"
+
+
+def read_status_short(repo_path: Path) -> str:
+    if not repo_path.exists() or not (repo_path / ".git").exists():
+        return ""
+    return run_git(repo_path, "status", "--short")
+
+
+def resolve_origin_default_branch(repo_path: Path) -> str:
+    try:
+        ref = run_git(repo_path, "symbolic-ref", "refs/remotes/origin/HEAD")
+        if ref.startswith("refs/remotes/origin/"):
+            return ref.removeprefix("refs/remotes/origin/")
+    except subprocess.CalledProcessError:
+        pass
+
+    for candidate in ("master", "main"):
+        try:
+            run_git(repo_path, "rev-parse", "--verify", f"origin/{candidate}")
+            return candidate
+        except subprocess.CalledProcessError:
+            continue
+
+    raise ValueError(f"cannot determine origin default branch for repo: {repo_path}")
 
 
 def update_index_status(index_path: Path, new_status: str, dry_run: bool) -> None:

@@ -79,11 +79,17 @@ repositories:
       copy_missing_from_template:
         - source: ".env.development.example"
           target: ".env.development"
+      local_backend_env_file: ".env.development"
+      local_backend_repo_key: "producer-backend"
+      backend_task_env_file: "docker/.task.env"
+      local_backend_proxy_host: "localhost"
+      local_backend_api_host: "pfzone.senguo.cc"
       environment_toml: ".codex/environments/environment.toml"
       install_commands:
         - "npm install"
       start_commands:
         - "npm run dev"
       notes:
-        - "Patch the task repo environment.toml when it already exists."
+        - "Generate environment.toml when missing; patch it when it already exists."
         - "Generate a task-scoped .codex/task-runtime.env so each task clone keeps a stable frontend port."
+        - "Patch .env.development so the task repo uses the sibling backend task port by default."

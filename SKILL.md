@@ -1,6 +1,6 @@
 ---
 name: task-workflow
-description: Use when the user mentions 新任务、多仓库任务、任务工作区、继续任务、恢复任务上下文、任务进度、任务完成, or needs to create, continue, complete, clean up, or inspect a multi-repo task under /Users/wuyongli/Documents/sg-project/_workspace.
+description: Use when the user mentions 新任务、多仓库任务、任务工作区、继续任务、恢复任务上下文、任务进度、任务完成、发布测试服、publish、同步远程主线、sync, or needs to create, continue, publish, sync, complete, clean up, or inspect a multi-repo task under /Users/wuyongli/Documents/sg-project/_workspace.
 ---
 
 # 任务工作流
@@ -118,12 +118,81 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_ru
 - `progress.md` 记录实际进展、验证结果、阻塞与变更历史
 - `meta.yaml` 保存最小机器事实
 - 不允许让 `index.md` 比 `meta.yaml` 更“新”
+- 更新文档时，优先整段重写当前章节并归并重复内容，不要只在原文后面继续追加碎片信息
+- 如果某个结论、方案或进展已经被新内容替代，应直接覆盖旧表述，而不是保留多个版本并列
+- `plan.md` 和 `index.md` 默认维护“当前有效版本”；只有 `progress.md` 的“变更记录”适合追加历史条目
 
 任务状态固定为：
 - `方案中`
 - `开发中`
 - `测试中`
 - `已完成`
+
+### 5. Publish
+
+用于本地开发和验收完成后，把当前任务的指定仓库发布到测试服。
+
+显式命令：
+
+```text
+/task-workflow publish <目标1> [目标2] [目标3...]
+```
+
+用户可以直接用自然语言描述发布目标。
+
+常见说法示例：
+- `后端`
+- `手机前端`
+- `PC前端`
+- `前端`
+
+`publish` / `sync` 共用目标识别规则：
+- 默认从当前任务上下文识别当前要操作的任务，不额外要求用户重复提供 task 标识
+- 如果当前上下文无法唯一识别任务，才向用户补充确认
+- 目标表达的核心是“目标分类”，不是固定仓库名；执行时需要在当前任务绑定仓库里动态匹配对应的后端、手机前端、PC 前端仓库
+- 如果用户只说“前端”，且当前任务里只有一个前端仓库，可以直接匹配；如果同时存在手机前端和 PC 前端，则应要求用户明确
+
+`publish` 规则：
+- 用户显式输入 `/task-workflow publish ...` 时，视为已授权直接执行发布动作
+- 一次可以传多个目标
+- 一次多个目标时，先统一识别并校验目标，再并行发布
+- 发布前先校验任务绑定仓库是否存在，以及当前分支是否与 `meta.yaml` 记录分支一致
+- 某个目标发布失败时，不应阻断其它目标；应继续完成其它目标，并明确展示失败仓库的错误信息
+- 发布失败后，默认停在“展示失败信息”这一步，不自动进入修代码、解冲突、补提交或重试发布
+- 如果失败原因是代码冲突、工作区不干净、分支异常或发布命令本身报错，默认只反馈事实，不自行修复，除非用户明确要求继续处理
+
+发布命令固定为：
+- 后端仓库：`sg publish jenkins`
+- 前端仓库：`sg publish local`
+
+### 6. Sync
+
+用于任务周期较长时，把当前任务下的仓库同步远程主线代码，避免和主线落后太多。
+
+显式命令：
+
+```text
+/task-workflow sync [目标1] [目标2] [...]
+```
+
+目标表达方式与 publish 相同：
+- 默认不指定目标时，同步当前任务下全部绑定仓库
+- 指定目标时，继续使用和 publish 一样的自然语言目标识别方式，例如 `后端`、`前端`、`手机前端`、`PC前端`
+
+`sync` 规则：
+- 多仓库同步默认并行执行，不强调顺序
+- 每个仓库同步前先检查当前分支是否与 `meta.yaml` 记录分支一致
+- 如果某个仓库有未提交的本地改动，不继续同步该仓库，应直接展示该仓库的 `git status --short` 结果
+- 同步过程默认先 `fetch origin --prune`，再把远程默认分支合入当前任务分支
+- 如果同步过程中出现冲突、工作区异常、分支异常或 git 命令报错，只反馈事实和错误信息，不自动修代码、不自动解冲突、不自动继续处理
+- 某个仓库同步失败时，不阻断其它仓库；其它仓库继续执行，最后统一汇总成功和失败
+
+推荐命令：
+
+```bash
+python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/sync_task_workspace.py "YYYY-MM-DD-原始任务名"
+python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/sync_task_workspace.py "YYYY-MM-DD-原始任务名" 后端 手机前端
+```
 
 ### 开发准入闸门
 
@@ -152,7 +221,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_ru
 - 当状态是 `方案中`，默认继续分析、补方案、补文档，不直接开工编码
 - 当状态是 `开发中` 或 `测试中`，可以继续既有实现与验证工作，除非用户明确要求回到方案讨论
 
-### 5. Complete
+### 7. Complete
 
 用于编码和自测完成后标记任务完成。
 
@@ -168,7 +237,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_ru
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/complete_task_workspace.py "YYYY-MM-DD-原始任务名"
 ```
 
-### 6. Cleanup
+### 8. Cleanup
 
 用于任务已完成，并且需要清理任务代码目录的时候。
 
@@ -184,7 +253,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/complete_task_w
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/cleanup_task_workspace.py "YYYY-MM-DD-原始任务名"
 ```
 
-### 7. Status
+### 9. Status
 
 用于用户想快速查看任务状态和任务仓库路径。
 
@@ -204,11 +273,25 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/status_task_wor
 
 文档约束：
 - task markdown files are fixed to `index.md`, `plan.md`, and `progress.md` by default
-- do not create extra task markdown files unless the user explicitly asks for them
-- if `plan.md` feels too large, reorganize headings inside `plan.md` instead of creating files like `implementation-plan.md`, `todo.md`, or `notes.md`
-- if unexpected extra task markdown files already exist, merge valid content back into `plan.md` or `progress.md` when appropriate
-- treat `plan.md` as the single source of truth for goals, solution decisions, execution plan, and validation plan
+- 复杂任务允许受控拆分，但不允许自由散生文档
+- 如果用户明确要求拆文档，直接按受控方式拆，不必坚持单文件
+- 当 `plan.md` 已同时承载多个相对独立模块方案，或正文已经明显影响阅读、归并更新与恢复上下文稳定性时，才允许拆出扩展文档
+- 允许的扩展文档只有两类：
+  - `appendix-<topic>.md`：承接背景推导、备选方案、远期预留、影响地图等不应长期压在正文里的内容
+  - `<module>-plan.md`：承接一个独立模块、页面组或子域的详细方案
+- 不要创建 `notes.md`、`todo.md`、`draft.md`、`plan-v2.md`、`tmp-*.md` 这类漂移文件
+- 如果 unexpected extra task markdown files already exist，优先归并到 `plan.md`、`progress.md` 或受控扩展文档，而不是继续沿用散乱命名
+- treat `plan.md` as the single source of truth for goals, solution decisions, implementation design, and validation plan
 - treat `progress.md` as the single source of truth for actual work done, verification results, and blockers
+- `plan.md` 只保留当前阶段的主阅读路径；远期阶段、展开推导和非当前主攻模块细节应下沉
+- 当更新任务文档时，默认做“归并更新”，不要做“追加式更新”
+- 如果目标章节本身已经存在重复、冲突或过期碎片，应先归并清理该章节，再写入新的当前版本
+- 对同一章节，如果出现旧结论和新结论冲突，应保留当前有效版本并删除旧碎片
+- 除“变更记录”外，不要让同一文件里出现多个并列的状态、多个并列的下一步、多个并列的方案版本
+- 只要拆出扩展文档，必须同时回写 `plan.md` 和 `index.md` 的导航；不能只新建文件不登记入口
+- `plan.md` 永远是主入口：当前范围、当前结论、当前开发方案和开工判断必须能在 `plan.md` 找到，不能完全下沉到子文档
+- 扩展文档中的当前有效结论，如果已经进入执行依据，必须回写归并到 `plan.md`
+- `appendix-*.md` 不是当前执行主依据；如果某个附录内容已转为当前方案，应归并回正文并从附录移除或降为补充说明
 
 ### `index.md`
 
@@ -228,6 +311,8 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/status_task_wor
 - `index.md` 中的状态和下一步是给人读的摘要，不是机器事实定义
 - 仓库路径、记录分支、恢复状态等机器事实优先放在 `meta.yaml`
 - 如果摘要中引用了机器事实，必须与 `meta.yaml` 保持一致
+- 更新 `index.md` 时应直接重写“任务摘要”到当前版本，不要在下方追加新的状态说明段落
+- 如果任务已经拆出模块子方案或附录，只在 `index.md` 中保留当前仍有效、仍需导航的文档，不要把过期子文档继续挂在导航里
 
 使用模板：[index.md](references/index.md)
 
@@ -238,12 +323,52 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/status_task_wor
 - 只保留当前有效方案，不保留讨论过程
 - 同时作为“是否允许开始代码工作”的判断依据和说明记录
 - 当产品方案已确认但开发方案未完成时，仍然属于 `方案中`
+- 如果某个领域型 skill 产出了当前采用的复用结论或项目惯例判断，也应在 `plan.md` 收口，而不是只留在对话里
 
 说明：
 - `plan.md` 负责记录为什么可以或不可以开工
 - 最终机器状态应写入 `meta.yaml`，不要让 `plan.md` 独自承担机器事实
+- 更新 `plan.md` 时，应把新方案归并到现有结构中，删除被替代的旧表述，不要把多轮讨论结果并列堆在同一章节下
+- `当前有效方案` 只写当前成立的产品/业务方案结论
+- `项目惯例与复用结论` 只写当前已经采用或待确认的项目惯例判断，不写完整搜索过程
+- `开发方案` 只写实现设计与改动面，不重复产品结论
+- 当前要推进的动作放在 `index.md` 的“下一步”和 `progress.md` 的“当前进展”，不要再在 `plan.md` 里重复维护一份动作清单
+- `plan.md` 应优先收口：当前阶段目标、当前明确范围、当前推荐路径、当前风险与待确认项
+- 如果某个模块的详细设计已经明显撑大主文档，应拆到 `<module>-plan.md`，主文档只保留结论摘要和入口
+- 如果某些内容属于远期路线、历史推导、备选方案或展开影响地图，应拆到 `appendix-<topic>.md`
+- 如果任务进入复杂阶段，`plan.md` 应增加“阅读导航”，把模块子方案和附录挂在固定入口下
+- 模块子方案用于承接单个模块的详细设计、代码锚点、接口草案和验证清单；不要在多个子方案里重复背景结论
+- 附录用于承接背景推导、旧方案对照、远期预留、展开影响地图；不要把它写成当前执行主文档
 
 使用模板：[plan.md](references/plan.md)
+
+### 受控扩展文档
+
+#### `<module>-plan.md`
+
+用途：
+- 当某个模块、页面组或子域的详细方案已经明显撑大 `plan.md` 时，承接该模块的细化设计
+
+规则：
+- 文件名保持 `<module>-plan.md`
+- 必须回链 `plan.md`
+- 只写该模块自己的范围、当前结论、实现设计、验证与风险
+- 不重复完整背景、全局范围和总方案结论
+
+使用模板：[module-plan.md](references/module-plan.md)
+
+#### `appendix-<topic>.md`
+
+用途：
+- 当背景分析、备选方案、历史推导、远期路线或展开影响地图会干扰正文主阅读路径时，承接这些补充内容
+
+规则：
+- 文件名保持 `appendix-<topic>.md`
+- 必须回链 `plan.md`
+- 默认不作为当前执行主依据
+- 如果附录中的某个结论已成为当前方案的一部分，先回写 `plan.md`，再决定是否保留附录作为补充
+
+使用模板：[appendix.md](references/appendix.md)
 
 ### `progress.md`
 
@@ -251,6 +376,10 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/status_task_wor
 - 实际执行状态
 - 自测结果
 - 供后续恢复上下文使用的最小历史
+
+说明：
+- `progress.md` 的“当前进展”“实际改动”“自测记录”“问题与阻塞”应始终整理为当前版本
+- 只有“变更记录”是天然追加区；其他章节如果反复追加，会导致内容零散、重复、难以恢复上下文
 
 使用模板：[progress.md](references/progress.md)
 
@@ -271,6 +400,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/status_task_wor
 - 只要任务状态、`resume_status`、仓库路径或记录分支发生变化，必须优先更新 `meta.yaml`，再确保 `index.md` 与之对齐
 - 当一次更新同时涉及 `index.md` 与 `meta.yaml` 时，视 `meta.yaml` 为最终机器事实，不要反过来只根据 `index.md` 推断
 - 除非 `meta.yaml` 缺失或损坏，否则恢复上下文时必须先读它，再读其他任务文档
+- 项目惯例判断、复用结论、方案取舍理由默认不写入 `meta.yaml`；这些内容应写在 `plan.md`
 
 ## 运行配置
 
@@ -300,6 +430,10 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/status_task_wor
 - `start_commands`: commands to start the repo locally
 - `notes`: short runtime remarks for the agent
 
+发布约定：
+- `shared-backend-app` 默认视为后端仓库，发布命令为 `sg publish jenkins`
+- `patch-node-frontend-environment` 默认视为前端仓库，发布命令为 `sg publish local`
+
 模板：[repositories.yaml.example](references/repositories.yaml.example)
 
 ### `workspace.yaml`
@@ -323,8 +457,32 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/status_task_wor
 ## 输出约束
 
 当用户要求创建或继续任务时，回复应聚焦于：
-- what task was identified
-- which repos are involved
-- what the next action is
+- 当前识别到的任务
+- 涉及哪些仓库
+- 下一步动作是什么
+
+当用户要求发布时，回复应聚焦于：
+- 当前识别到的任务
+- 将发布哪些目标
+- 每个目标对应的仓库目录和发布命令
+- 发布结果，以及失败仓库的错误信息
+
+当用户要求同步远程主线时，回复应聚焦于：
+- 当前识别到的任务
+- 将同步哪些仓库
+- 每个仓库的当前分支和同步动作
+- 成功结果，以及失败仓库的错误信息或冲突信息
+
+发布场景下的协作约束：
+- 不要把内部脚本实现、通用化改造、命名抽象这类 agent 内部设计过程再次抛给用户确认
+- 如果用户已经明确表达发布意图，应直接按当前 task-workflow 规则识别任务、匹配目标并执行
+- 对用户优先说明“识别到什么任务、将发布什么、为什么这样执行”，而不是说明“准备怎么改脚本”
+- 只有在发布目标无法匹配、任务上下文不明确、或存在真实执行风险时，才向用户补充提问
+- 除非用户明确在讨论 workflow/skill 设计本身，否则不要把实现层 tradeoff 当作当前对话主问题
+- 发布失败后，默认不延伸到代码修复流程；先把失败点和错误信息交给用户决定下一步
+
+同步场景下的协作约束：
+- 不要把“准备怎么 merge、怎么解冲突、要不要顺手修代码”这类后续动作自动串进去
+- 如果同步失败，默认停在“展示失败仓库和错误信息”这一步，等用户确认后再继续处理
 
 在工作流已经建立后，不要反复解释目录树结构或 Git 基础概念。
