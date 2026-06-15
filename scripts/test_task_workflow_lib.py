@@ -16,6 +16,9 @@ import render_task_dev_portal as portal_script
 import serve_task_dev_portal as portal_server_script
 import sync_task_workspace as sync_script
 import task_workflow_lib as lib
+import next_task_workspace as next_script
+import complete_task_workspace as complete_script
+import cleanup_task_workspace as cleanup_script
 
 
 class PortAvailabilityTests(unittest.TestCase):
@@ -128,6 +131,90 @@ class FrontendLocalBackendPatchTests(unittest.TestCase):
             self.assertIn('VITE_DEV_PROXY_TARGET = "http://localhost:18897"', updated)
             self.assertIn('VITE_PF_API_URL = "http://pfzone.senguo.cc:18897"', updated)
             self.assertEqual(summary["generated_files"], [".env.development"])
+
+
+class StopTaskRuntimeTests(unittest.TestCase):
+    def test_stop_task_runtime_stops_node_frontend_listener(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            (repo_path / ".codex").mkdir()
+            (repo_path / ".codex/task-runtime.env").write_text("TASK_WEB_PORT=3018\n", encoding="utf-8")
+
+            with (
+                mock.patch.object(
+                    lib,
+                    "_find_listening_processes",
+                    return_value=[{"pid": 12345, "cwd": str(repo_path)}],
+                ),
+                mock.patch.object(lib.subprocess, "run") as run_mock,
+            ):
+                messages = lib.stop_task_runtime(
+                    {"key": "pf-mproducer-supplier", "runtime": {"mode": "patch-node-frontend-environment"}},
+                    repo_path,
+                    dry_run=False,
+                )
+
+        self.assertEqual(messages, ["pf-mproducer-supplier: stopped pid 12345 on port 3018"])
+        run_mock.assert_called_once_with(["kill", "12345"], check=True, text=True)
+
+    def test_stop_task_runtime_skips_listener_outside_current_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir) / "task-repo"
+            repo_path.mkdir()
+            (repo_path / ".codex").mkdir()
+            (repo_path / ".codex/task-runtime.env").write_text("TASK_WEB_PORT=3018\n", encoding="utf-8")
+
+            with (
+                mock.patch.object(
+                    lib,
+                    "_find_listening_processes",
+                    return_value=[{"pid": 54321, "cwd": "/tmp/other-task"}],
+                ),
+                mock.patch.object(lib.subprocess, "run") as run_mock,
+            ):
+                messages = lib.stop_task_runtime(
+                    {"key": "pf-mproducer-supplier", "runtime": {"mode": "patch-node-frontend-environment"}},
+                    repo_path,
+                    dry_run=False,
+                )
+
+        self.assertEqual(
+            messages,
+            ["pf-mproducer-supplier: skip pid 54321 on port 3018 because it does not belong to current repo"],
+        )
+        run_mock.assert_not_called()
+
+    def test_stop_task_runtime_stops_shared_backend_container(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            docker_dir = repo_path / "docker"
+            docker_dir.mkdir()
+            (docker_dir / ".task.env").write_text("TASK_APP_HOST_PORT=18897\n", encoding="utf-8")
+            (docker_dir / "docker-compose.task.yml").write_text("services:\n  app:\n", encoding="utf-8")
+
+            with mock.patch.object(lib.subprocess, "run") as run_mock:
+                messages = lib.stop_task_runtime(
+                    {"key": "producer-backend", "runtime": {"mode": "shared-backend-app"}},
+                    repo_path,
+                    dry_run=False,
+                )
+
+        self.assertEqual(messages, ["producer-backend: stopped task app container"])
+        run_mock.assert_called_once_with(
+            [
+                "docker",
+                "compose",
+                "--env-file",
+                ".task.env",
+                "-f",
+                "docker-compose.task.yml",
+                "stop",
+                "app",
+            ],
+            check=True,
+            text=True,
+            cwd=str(docker_dir),
+        )
 
 
 class PublishTargetTests(unittest.TestCase):
@@ -438,6 +525,554 @@ class TaskPortalTests(unittest.TestCase):
         self.assertIn("render-1", first)
         self.assertIn("render-2", second)
         self.assertEqual(call_count, 2)
+
+
+class NextTaskWorkspaceTests(unittest.TestCase):
+    def test_next_task_workspace_resets_current_stage_and_creates_new_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir) / "workspace"
+            docs_root = workspace_root / "_docs"
+            tasks_root = workspace_root / "_tasks"
+            config_root = workspace_root / "config"
+            task_id = "2026-06-03-部门转货"
+            task_docs_root = docs_root / task_id
+            task_code_root = tasks_root / task_id
+            task_docs_root.mkdir(parents=True)
+            task_code_root.mkdir(parents=True)
+            config_root.mkdir(parents=True)
+
+            (config_root / "workspace.yaml").write_text(
+                "\n".join(
+                    [
+                        f'workspace_root: "{workspace_root}"',
+                        f'tasks_root: "{tasks_root}"',
+                        f'docs_root: "{docs_root}"',
+                        "documents:",
+                        '  index: "index.md"',
+                        '  plan: "plan.md"',
+                        '  progress: "progress.md"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            (task_docs_root / "meta.yaml").write_text(
+                "\n".join(
+                    [
+                        f"task_id: {task_id}",
+                        "status: 已完成",
+                        "resume_status: 已完成",
+                        "coding_allowed: false",
+                        "repos:",
+                        "- key: producer-backend",
+                        "  repo_dir: producer-backend__部门转货",
+                        "  branch: 一期分支",
+                        "- key: pf-mproducer-supplier",
+                        "  repo_dir: pf-mproducer-supplier__部门转货",
+                        "  branch: 一期分支",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (task_docs_root / "index.md").write_text(
+                "\n".join(
+                    [
+                        "# 部门转货",
+                        "",
+                        "## 任务摘要",
+                        "- 当前状态：已完成",
+                        "- 一句话目标：一期目标",
+                        "- 当前结论：一期已上线",
+                        "- 当前阻塞：无",
+                        "- 下一步：无",
+                        "",
+                        "## 文档导航",
+                        "- 事实文件：./meta.yaml",
+                        "- 计划文档：./plan.md",
+                        "- 进度文档：./progress.md",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (task_docs_root / "plan.md").write_text("# 一期方案\n", encoding="utf-8")
+            (task_docs_root / "progress.md").write_text(
+                "# 部门转货 任务进度\n\n## 当前进展\n- 已完成：一期完成\n",
+                encoding="utf-8",
+            )
+
+            (task_code_root / "producer-backend__部门转货").mkdir()
+            (task_code_root / "pf-mproducer-supplier__部门转货").mkdir()
+
+            with (
+                mock.patch.object(next_script, "validate_repo_state", return_value=[]),
+                mock.patch.object(next_script, "run") as run_mock,
+                mock.patch("sys.argv", [
+                    "next_task_workspace.py",
+                    task_id,
+                    "加工单扫码支持托盘码二期",
+                    "--config-root",
+                    str(config_root),
+                ]),
+            ):
+                self.assertEqual(next_script.main(), 0)
+
+            meta = lib.load_yaml(task_docs_root / "meta.yaml")
+            self.assertEqual(meta["status"], "方案中")
+            self.assertEqual(meta["resume_status"], "方案中")
+            self.assertFalse(meta["coding_allowed"])
+            self.assertEqual(meta["phase"], 2)
+            self.assertEqual(meta["current_task_name"], "加工单扫码支持托盘码二期")
+            self.assertEqual(meta["active_plan"], "plan-加工单扫码支持托盘码二期.md")
+            self.assertEqual(meta["repos"][0]["branch"], "加工单扫码支持托盘码二期")
+            self.assertEqual(meta["previous_phases"][0]["plan"], "plan.md")
+
+            new_plan_path = task_docs_root / "plan-加工单扫码支持托盘码二期.md"
+            self.assertTrue(new_plan_path.exists())
+            self.assertIn("# 加工单扫码支持托盘码二期", new_plan_path.read_text(encoding="utf-8"))
+
+            index_text = (task_docs_root / "index.md").read_text(encoding="utf-8")
+            self.assertIn("- 当前状态：方案中", index_text)
+            self.assertIn("- 当前阶段任务：加工单扫码支持托盘码二期", index_text)
+            self.assertIn("- 前置阶段任务：部门转货", index_text)
+            self.assertIn("- 当前阶段计划：./plan-加工单扫码支持托盘码二期.md", index_text)
+            self.assertIn("- 历史阶段计划：./plan.md", index_text)
+
+            progress_text = (task_docs_root / "progress.md").read_text(encoding="utf-8")
+            self.assertIn("下一阶段开启", progress_text)
+            self.assertIn("加工单扫码支持托盘码二期", progress_text)
+
+            commands = [call.args[0] for call in run_mock.call_args_list]
+            self.assertIn(
+                ["git", "-C", str(task_code_root / "producer-backend__部门转货"), "fetch", "origin", "--prune"],
+                commands,
+            )
+            self.assertIn(
+                [
+                    "git",
+                    "-C",
+                    str(task_code_root / "producer-backend__部门转货"),
+                    "checkout",
+                    "-B",
+                    "加工单扫码支持托盘码二期",
+                    "origin/master",
+                ],
+                commands,
+            )
+
+    def test_next_task_workspace_can_switch_only_selected_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir) / "workspace"
+            docs_root = workspace_root / "_docs"
+            tasks_root = workspace_root / "_tasks"
+            config_root = workspace_root / "config"
+            task_id = "2026-06-14-加工扫托盘码"
+            task_docs_root = docs_root / task_id
+            task_code_root = tasks_root / task_id
+            task_docs_root.mkdir(parents=True)
+            task_code_root.mkdir(parents=True)
+            config_root.mkdir(parents=True)
+
+            (config_root / "workspace.yaml").write_text(
+                "\n".join(
+                    [
+                        f'workspace_root: "{workspace_root}"',
+                        f'tasks_root: "{tasks_root}"',
+                        f'docs_root: "{docs_root}"',
+                        "documents:",
+                        '  index: "index.md"',
+                        '  plan: "plan.md"',
+                        '  progress: "progress.md"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            (task_docs_root / "meta.yaml").write_text(
+                "\n".join(
+                    [
+                        f"task_id: {task_id}",
+                        "status: 已完成",
+                        "resume_status: 已完成",
+                        "coding_allowed: false",
+                        "repos:",
+                        "- key: producer-backend",
+                        "  repo_dir: producer-backend__加工扫托盘码",
+                        "  branch: 一期后端分支",
+                        "- key: pf-mproducer-supplier",
+                        "  repo_dir: pf-mproducer-supplier__加工扫托盘码",
+                        "  branch: 一期手机分支",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (task_docs_root / "index.md").write_text("# 加工扫托盘码\n", encoding="utf-8")
+            (task_docs_root / "plan.md").write_text("# 一期方案\n", encoding="utf-8")
+            (task_docs_root / "progress.md").write_text("# 任务进度\n\n## 变更记录\n", encoding="utf-8")
+
+            (task_code_root / "producer-backend__加工扫托盘码").mkdir()
+            (task_code_root / "pf-mproducer-supplier__加工扫托盘码").mkdir()
+
+            def fake_validate(repo_path: Path, require_remote_sync: bool, expected_branch: str | None = None) -> list[str]:
+                if repo_path.name == "pf-mproducer-supplier__加工扫托盘码":
+                    return []
+                if expected_branch == "一期后端分支":
+                    return []
+                return ["unexpected branch check"]
+
+            with (
+                mock.patch.object(next_script, "validate_repo_state", side_effect=fake_validate),
+                mock.patch.object(next_script, "run") as run_mock,
+                mock.patch("sys.argv", [
+                    "next_task_workspace.py",
+                    task_id,
+                    "先建优化任务-加工一个托盘码一行",
+                    "--repo",
+                    "pf-mproducer-supplier",
+                    "--config-root",
+                    str(config_root),
+                ]),
+            ):
+                self.assertEqual(next_script.main(), 0)
+
+            meta = lib.load_yaml(task_docs_root / "meta.yaml")
+            self.assertEqual(meta["phase"], 2)
+            self.assertEqual(meta["current_task_name"], "先建优化任务-加工一个托盘码一行")
+            self.assertEqual(meta["repos"][0]["branch"], "一期后端分支")
+            self.assertEqual(meta["repos"][1]["branch"], "先建优化任务-加工一个托盘码一行")
+
+            new_plan_path = task_docs_root / "plan-先建优化任务-加工一个托盘码一行.md"
+            self.assertTrue(new_plan_path.exists())
+            self.assertIn("涉及仓库：pf-mproducer-supplier", new_plan_path.read_text(encoding="utf-8"))
+
+            commands = [call.args[0] for call in run_mock.call_args_list]
+            self.assertIn(
+                [
+                    "git",
+                    "-C",
+                    str(task_code_root / "pf-mproducer-supplier__加工扫托盘码"),
+                    "checkout",
+                    "-B",
+                    "先建优化任务-加工一个托盘码一行",
+                    "origin/master",
+                ],
+                commands,
+            )
+            self.assertNotIn(
+                [
+                    "git",
+                    "-C",
+                    str(task_code_root / "producer-backend__加工扫托盘码"),
+                    "checkout",
+                    "-B",
+                    "先建优化任务-加工一个托盘码一行",
+                    "origin/master",
+                ],
+                commands,
+            )
+
+    def test_next_task_workspace_accepts_human_target_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir) / "workspace"
+            docs_root = workspace_root / "_docs"
+            tasks_root = workspace_root / "_tasks"
+            config_root = workspace_root / "config"
+            task_id = "2026-06-14-加工扫托盘码"
+            task_docs_root = docs_root / task_id
+            task_code_root = tasks_root / task_id
+            task_docs_root.mkdir(parents=True)
+            task_code_root.mkdir(parents=True)
+            config_root.mkdir(parents=True)
+
+            (config_root / "workspace.yaml").write_text(
+                "\n".join(
+                    [
+                        f'workspace_root: "{workspace_root}"',
+                        f'tasks_root: "{tasks_root}"',
+                        f'docs_root: "{docs_root}"',
+                        "documents:",
+                        '  index: "index.md"',
+                        '  plan: "plan.md"',
+                        '  progress: "progress.md"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (config_root / "repositories.yaml").write_text(
+                "\n".join(
+                    [
+                        "repositories:",
+                        "- key: producer-backend",
+                        '  path: "/tmp/producer-backend"',
+                        '  remote: "git@example.com:producer-backend.git"',
+                        '  notes: "产地通后端"',
+                        "  runtime:",
+                        '    mode: "shared-backend-app"',
+                        "- key: pf-mproducer-supplier",
+                        '  path: "/tmp/pf-mproducer-supplier"',
+                        '  remote: "git@example.com:pf-mproducer-supplier.git"',
+                        '  notes: "产地通手机前端"',
+                        "  runtime:",
+                        '    mode: "patch-node-frontend-environment"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (task_docs_root / "meta.yaml").write_text(
+                "\n".join(
+                    [
+                        f"task_id: {task_id}",
+                        "status: 已完成",
+                        "resume_status: 已完成",
+                        "coding_allowed: false",
+                        "repos:",
+                        "- key: producer-backend",
+                        "  repo_dir: producer-backend__加工扫托盘码",
+                        "  branch: 一期后端分支",
+                        "- key: pf-mproducer-supplier",
+                        "  repo_dir: pf-mproducer-supplier__加工扫托盘码",
+                        "  branch: 一期手机分支",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (task_docs_root / "index.md").write_text("# 加工扫托盘码\n", encoding="utf-8")
+            (task_docs_root / "plan.md").write_text("# 一期方案\n", encoding="utf-8")
+            (task_docs_root / "progress.md").write_text("# 任务进度\n\n## 变更记录\n", encoding="utf-8")
+
+            (task_code_root / "producer-backend__加工扫托盘码").mkdir()
+            (task_code_root / "pf-mproducer-supplier__加工扫托盘码").mkdir()
+
+            with (
+                mock.patch.object(next_script, "validate_repo_state", return_value=[]),
+                mock.patch.object(next_script, "run") as run_mock,
+                mock.patch("sys.argv", [
+                    "next_task_workspace.py",
+                    task_id,
+                    "先建优化任务-加工一个托盘码一行",
+                    "--repo",
+                    "手机前端",
+                    "--config-root",
+                    str(config_root),
+                ]),
+            ):
+                self.assertEqual(next_script.main(), 0)
+
+            commands = [call.args[0] for call in run_mock.call_args_list]
+            self.assertIn(
+                [
+                    "git",
+                    "-C",
+                    str(task_code_root / "pf-mproducer-supplier__加工扫托盘码"),
+                    "checkout",
+                    "-B",
+                    "先建优化任务-加工一个托盘码一行",
+                    "origin/master",
+                ],
+                commands,
+            )
+
+    def test_next_task_workspace_requires_completed_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir) / "workspace"
+            docs_root = workspace_root / "_docs"
+            tasks_root = workspace_root / "_tasks"
+            config_root = workspace_root / "config"
+            task_id = "2026-06-03-部门转货"
+            task_docs_root = docs_root / task_id
+            task_code_root = tasks_root / task_id
+            task_docs_root.mkdir(parents=True)
+            task_code_root.mkdir(parents=True)
+            config_root.mkdir(parents=True)
+
+            (config_root / "workspace.yaml").write_text(
+                "\n".join(
+                    [
+                        f'workspace_root: "{workspace_root}"',
+                        f'tasks_root: "{tasks_root}"',
+                        f'docs_root: "{docs_root}"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (task_docs_root / "meta.yaml").write_text(
+                "\n".join(
+                    [
+                        f"task_id: {task_id}",
+                        "status: 开发中",
+                        "resume_status: 开发中",
+                        "coding_allowed: true",
+                        "repos: []",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch("sys.argv", [
+                "next_task_workspace.py",
+                task_id,
+                "加工单扫码支持托盘码二期",
+                "--config-root",
+                str(config_root),
+            ]):
+                with self.assertRaisesRegex(ValueError, "next requires task status in \\[已完成\\]"):
+                    next_script.main()
+
+
+class CompleteCleanupRuntimeTests(unittest.TestCase):
+    def test_complete_task_workspace_stops_runtime_before_marking_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir) / "workspace"
+            docs_root = workspace_root / "_docs"
+            tasks_root = workspace_root / "_tasks"
+            config_root = workspace_root / "config"
+            task_id = "2026-06-03-部门转货"
+            task_docs_root = docs_root / task_id
+            task_code_root = tasks_root / task_id
+            task_docs_root.mkdir(parents=True)
+            task_code_root.mkdir(parents=True)
+            config_root.mkdir(parents=True)
+
+            (config_root / "workspace.yaml").write_text(
+                "\n".join(
+                    [
+                        f'workspace_root: "{workspace_root}"',
+                        f'tasks_root: "{tasks_root}"',
+                        f'docs_root: "{docs_root}"',
+                        "documents:",
+                        '  index: "index.md"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (config_root / "repositories.yaml").write_text(
+                "\n".join(
+                    [
+                        "repositories:",
+                        "- key: producer-backend",
+                        '  path: "/tmp/producer-backend"',
+                        '  remote: "git@example.com:producer-backend.git"',
+                        "  runtime:",
+                        '    mode: "shared-backend-app"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (task_docs_root / "meta.yaml").write_text(
+                "\n".join(
+                    [
+                        f"task_id: {task_id}",
+                        "status: 测试中",
+                        "resume_status: 测试中",
+                        "coding_allowed: true",
+                        "repos:",
+                        "- key: producer-backend",
+                        "  repo_dir: producer-backend__部门转货",
+                        "  branch: 部门转货",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (task_docs_root / "index.md").write_text("- 当前状态：测试中\n", encoding="utf-8")
+            (task_code_root / "producer-backend__部门转货").mkdir()
+
+            with (
+                mock.patch.object(complete_script, "validate_repo_state", return_value=[]),
+                mock.patch.object(complete_script, "stop_task_runtime", create=True) as stop_runtime_mock,
+                mock.patch("sys.argv", [
+                    "complete_task_workspace.py",
+                    task_id,
+                    "--config-root",
+                    str(config_root),
+                ]),
+            ):
+                self.assertEqual(complete_script.main(), 0)
+
+            stop_runtime_mock.assert_called_once()
+            self.assertEqual(stop_runtime_mock.call_args.args[0]["runtime"]["mode"], "shared-backend-app")
+
+    def test_cleanup_task_workspace_stops_runtime_before_removing_task_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir) / "workspace"
+            docs_root = workspace_root / "_docs"
+            tasks_root = workspace_root / "_tasks"
+            config_root = workspace_root / "config"
+            task_id = "2026-06-03-部门转货"
+            task_docs_root = docs_root / task_id
+            task_code_root = tasks_root / task_id
+            task_docs_root.mkdir(parents=True)
+            task_code_root.mkdir(parents=True)
+            config_root.mkdir(parents=True)
+
+            (config_root / "workspace.yaml").write_text(
+                "\n".join(
+                    [
+                        f'workspace_root: "{workspace_root}"',
+                        f'tasks_root: "{tasks_root}"',
+                        f'docs_root: "{docs_root}"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (config_root / "repositories.yaml").write_text(
+                "\n".join(
+                    [
+                        "repositories:",
+                        "- key: producer-backend",
+                        '  path: "/tmp/producer-backend"',
+                        '  remote: "git@example.com:producer-backend.git"',
+                        "  runtime:",
+                        '    mode: "shared-backend-app"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (task_docs_root / "meta.yaml").write_text(
+                "\n".join(
+                    [
+                        f"task_id: {task_id}",
+                        "status: 已完成",
+                        "resume_status: 已完成",
+                        "coding_allowed: false",
+                        "repos:",
+                        "- key: producer-backend",
+                        "  repo_dir: producer-backend__部门转货",
+                        "  branch: 部门转货",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (task_code_root / "producer-backend__部门转货").mkdir()
+
+            with (
+                mock.patch.object(cleanup_script, "validate_repo_state", return_value=[]),
+                mock.patch.object(cleanup_script, "stop_task_runtime", create=True) as stop_runtime_mock,
+                mock.patch("sys.argv", [
+                    "cleanup_task_workspace.py",
+                    task_id,
+                    "--config-root",
+                    str(config_root),
+                ]),
+            ):
+                self.assertEqual(cleanup_script.main(), 0)
+
+            stop_runtime_mock.assert_called_once()
+            self.assertEqual(stop_runtime_mock.call_args.args[0]["runtime"]["mode"], "shared-backend-app")
 
 
 if __name__ == "__main__":

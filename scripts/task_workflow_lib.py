@@ -142,6 +142,37 @@ def resolve_requested_repo_keys(
     return resolved
 
 
+def resolve_requested_repo_keys_or_aliases(
+    raw_targets: list[str],
+    bound_repo_keys: list[str],
+    repo_cfg_by_key: dict[str, dict[str, Any]],
+) -> list[str]:
+    if not raw_targets:
+        return list(bound_repo_keys)
+
+    resolved: list[str] = []
+    alias_targets: list[str] = []
+    seen: set[str] = set()
+    bound_repo_key_set = set(bound_repo_keys)
+
+    for raw_target in raw_targets:
+        normalized = raw_target.strip()
+        if normalized in bound_repo_key_set:
+            if normalized not in seen:
+                seen.add(normalized)
+                resolved.append(normalized)
+            continue
+        alias_targets.append(raw_target)
+
+    if alias_targets:
+        for repo_key in resolve_requested_repo_keys(alias_targets, bound_repo_keys, repo_cfg_by_key):
+            if repo_key in seen:
+                continue
+            seen.add(repo_key)
+            resolved.append(repo_key)
+    return resolved
+
+
 def classify_repo_publish_kind(repo_cfg: dict[str, Any]) -> str | None:
     repo_key = str(repo_cfg.get("key") or "")
     repo_path = str(repo_cfg.get("path") or "")
@@ -428,6 +459,124 @@ def _find_task_repo_path(task_root: Path, repo_key: str) -> Path | None:
     if not matches:
         return None
     return matches[0]
+
+
+def _find_listening_pids(port: int) -> list[int]:
+    result = subprocess.run(
+        [f"lsof", f"-tiTCP:{port}", "-sTCP:LISTEN"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode not in (0, 1):
+        raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
+
+    pids: list[int] = []
+    for line in result.stdout.splitlines():
+        pid_text = line.strip()
+        if pid_text.isdigit():
+            pids.append(int(pid_text))
+    return pids
+
+
+def _read_process_cwd(pid: int) -> str | None:
+    result = subprocess.run(
+        ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode not in (0, 1):
+        raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
+
+    for line in result.stdout.splitlines():
+        if line.startswith("n") and line[1:].strip():
+            return line[1:].strip()
+    return None
+
+
+def _find_listening_processes(port: int) -> list[dict[str, str | int | None]]:
+    processes: list[dict[str, str | int | None]] = []
+    for pid in _find_listening_pids(port):
+        processes.append(
+            {
+                "pid": pid,
+                "cwd": _read_process_cwd(pid),
+            }
+        )
+    return processes
+
+
+def _process_belongs_to_repo(process_cwd: str | None, repo_path: Path) -> bool:
+    if not process_cwd:
+        return False
+    repo_root = repo_path.resolve()
+    process_root = Path(process_cwd).resolve()
+    return process_root == repo_root or process_root.is_relative_to(repo_root)
+
+
+def _stop_node_frontend_runtime(
+    repo_cfg: dict[str, Any],
+    repo_path: Path,
+    runtime_cfg: dict[str, Any],
+    dry_run: bool,
+) -> list[str]:
+    env_rel_path = str(runtime_cfg.get("task_env_file", ".codex/task-runtime.env"))
+    port_key = str(runtime_cfg.get("task_port_key", "TASK_WEB_PORT"))
+    env_data = _parse_env_file(repo_path / env_rel_path)
+    port_text = env_data.get(port_key, "").strip()
+    if not port_text:
+        return [f"{repo_cfg.get('key')}: no {port_key} found, skip runtime stop"]
+
+    port = int(port_text)
+    processes = _find_listening_processes(port)
+    if not processes:
+        return [f"{repo_cfg.get('key')}: no listener on port {port}"]
+
+    messages: list[str] = []
+    for process in processes:
+        pid = int(process["pid"])
+        process_cwd = process.get("cwd")
+        if not _process_belongs_to_repo(process_cwd if isinstance(process_cwd, str) else None, repo_path):
+            messages.append(
+                f"{repo_cfg.get('key')}: skip pid {pid} on port {port} because it does not belong to current repo"
+            )
+            continue
+        print(f"stop frontend runtime: pid={pid} port={port}")
+        if not dry_run:
+            subprocess.run(["kill", str(pid)], check=True, text=True)
+        messages.append(f"{repo_cfg.get('key')}: stopped pid {pid} on port {port}")
+    return messages
+
+
+def _stop_shared_backend_runtime(
+    repo_cfg: dict[str, Any],
+    repo_path: Path,
+    runtime_cfg: dict[str, Any],
+    dry_run: bool,
+) -> list[str]:
+    env_rel_path = str(runtime_cfg.get("task_env_file", "docker/.task.env"))
+    compose_rel_path = str(runtime_cfg.get("task_compose_file", "docker/docker-compose.task.yml"))
+    env_path = repo_path / env_rel_path
+    compose_path = repo_path / compose_rel_path
+    if not env_path.exists() or not compose_path.exists():
+        return [f"{repo_cfg.get('key')}: task docker files missing, skip runtime stop"]
+
+    command = [
+        "docker",
+        "compose",
+        "--env-file",
+        env_path.name,
+        "-f",
+        compose_path.name,
+        "stop",
+        "app",
+    ]
+    cwd = compose_path.parent
+    print("$", " ".join(command), f"(cwd={cwd})")
+    if not dry_run:
+        subprocess.run(command, check=True, text=True, cwd=str(cwd))
+    return [f"{repo_cfg.get('key')}: stopped task app container"]
 
 
 def _port_is_available(port: int) -> bool:
@@ -862,6 +1011,19 @@ def start_repo_runtime(repo_cfg: dict[str, Any], repo_path: Path, dry_run: bool)
                 raise
             warnings.append(f"{step['command']} @ {cwd}: {exc}")
     return {"executed": executed, "warnings": warnings}
+
+
+def stop_task_runtime(repo_cfg: dict[str, Any], repo_path: Path, dry_run: bool) -> list[str]:
+    runtime_cfg = repo_cfg.get("runtime") or {}
+    if not isinstance(runtime_cfg, dict):
+        raise ValueError(f"runtime config for repo {repo_cfg.get('key')} must be a mapping")
+
+    runtime_mode = str(runtime_cfg.get("mode") or "").strip()
+    if runtime_mode == "patch-node-frontend-environment":
+        return _stop_node_frontend_runtime(repo_cfg, repo_path, runtime_cfg, dry_run)
+    if runtime_mode == "shared-backend-app":
+        return _stop_shared_backend_runtime(repo_cfg, repo_path, runtime_cfg, dry_run)
+    return [f"{repo_cfg.get('key')}: no managed runtime stop action"]
 
 
 def _prepare_shared_backend_runtime(

@@ -11,6 +11,7 @@ from task_workflow_lib import (
     require_task_status,
     resolve_repo_path,
     safe_remove_path,
+    stop_task_runtime,
     validate_repo_state,
 )
 
@@ -26,9 +27,15 @@ def main() -> int:
     args = parser.parse_args()
 
     workspace_cfg = load_yaml(args.config_root / "workspace.yaml")
+    repositories_cfg = load_yaml(args.config_root / "repositories.yaml")
     docs_root = Path(workspace_cfg["docs_root"])
     tasks_root = Path(workspace_cfg["tasks_root"])
     require_remote_sync = bool(workspace_cfg.get("cleanup_requires_remote_sync", True))
+    repo_cfg_by_key = {
+        str(repo["key"]): repo
+        for repo in repositories_cfg.get("repositories", [])
+        if isinstance(repo, dict) and repo.get("key")
+    }
 
     _meta_path, meta = load_task_meta(docs_root, args.task_id)
     require_task_status(meta, ("已完成",), "cleanup")
@@ -55,6 +62,15 @@ def main() -> int:
     if failed:
         print("cleanup blocked")
         return 2
+
+    for repo_meta in repos:
+        if not isinstance(repo_meta, dict):
+            continue
+        repo_key = str(repo_meta.get("key") or "unknown")
+        repo_path = resolve_repo_path(tasks_root, args.task_id, repo_meta)
+        repo_cfg = repo_cfg_by_key.get(repo_key, repo_meta)
+        for message in stop_task_runtime(repo_cfg, repo_path, args.dry_run):
+            print(f"[STOP] {repo_key} -> {message}")
 
     safe_remove_path(tasks_root / args.task_id, args.dry_run)
     print("task code cleanup complete")
