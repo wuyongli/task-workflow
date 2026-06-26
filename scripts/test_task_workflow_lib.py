@@ -16,6 +16,7 @@ import render_task_dev_portal as portal_script
 import serve_task_dev_portal as portal_server_script
 import sync_task_workspace as sync_script
 import task_workflow_lib as lib
+import create_task_workspace as create_script
 import next_task_workspace as next_script
 import complete_task_workspace as complete_script
 import cleanup_task_workspace as cleanup_script
@@ -399,6 +400,160 @@ class PublishTargetTests(unittest.TestCase):
         self.assertIn("oops-out", result["stdout"])
         self.assertIn("oops-err", result["stderr"])
 
+    def test_run_publish_job_uses_cli_log_failed_status_even_when_exit_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            with (
+                mock.patch.object(
+                    publish_script.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess(
+                        args=["sg", "publish", "local"],
+                        returncode=0,
+                        stdout="",
+                        stderr="",
+                    ),
+                ),
+                mock.patch.object(
+                    publish_script,
+                    "find_publish_cli_log_entry",
+                    return_value={
+                        "status": "failed",
+                        "error": {"message": "CONFLICTS: src/a.ts:add/add"},
+                    },
+                ),
+            ):
+                result = publish_script.run_publish_job(
+                    {
+                        "repo_key": "demo-repo",
+                        "repo_path": repo_path,
+                        "command": ["sg", "publish", "local"],
+                    }
+                )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["returncode"], 0)
+        self.assertEqual(result["log_status"], "failed")
+        self.assertIn("CONFLICTS:", result["error_message"])
+
+    def test_run_publish_job_requires_explicit_success_signal_for_local_publish(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            with (
+                mock.patch.object(
+                    publish_script.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess(
+                        args=["sg", "publish", "local"],
+                        returncode=0,
+                        stdout="build complete\n",
+                        stderr="",
+                    ),
+                ),
+                mock.patch.object(publish_script, "find_publish_cli_log_entry", return_value=None),
+            ):
+                result = publish_script.run_publish_job(
+                    {
+                        "repo_key": "demo-repo",
+                        "repo_path": repo_path,
+                        "command": ["sg", "publish", "local"],
+                    }
+                )
+
+        self.assertEqual(result["status"], "uncertain")
+        self.assertIn("no explicit success signal", result["error_message"])
+
+    def test_run_publish_job_accepts_explicit_terminal_success_for_local_publish(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            with (
+                mock.patch.object(
+                    publish_script.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess(
+                        args=["sg", "publish", "local"],
+                        returncode=0,
+                        stdout="发布成功\n",
+                        stderr="",
+                    ),
+                ),
+                mock.patch.object(publish_script, "find_publish_cli_log_entry", return_value=None),
+            ):
+                result = publish_script.run_publish_job(
+                    {
+                        "repo_key": "demo-repo",
+                        "repo_path": repo_path,
+                        "command": ["sg", "publish", "local"],
+                    }
+                )
+
+        self.assertEqual(result["status"], "success")
+
+    def test_run_publish_job_wraps_local_publish_with_repo_node_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            with (
+                mock.patch.object(
+                    publish_script.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess(
+                        args=["zsh", "-lc", "wrapped"],
+                        returncode=0,
+                        stdout="发布成功\n",
+                        stderr="",
+                    ),
+                ) as run,
+                mock.patch.object(publish_script, "find_publish_cli_log_entry", return_value=None) as find_log,
+            ):
+                result = publish_script.run_publish_job(
+                    {
+                        "repo_key": "demo-repo",
+                        "repo_path": repo_path,
+                        "command": ["sg", "publish", "local"],
+                        "node_version": "24.14.0",
+                    }
+                )
+
+        run.assert_called_once()
+        executed_command = run.call_args.args[0]
+        self.assertEqual(executed_command[:2], ["zsh", "-lc"])
+        self.assertIn("fnm use --install-if-missing 24.14.0", executed_command[2])
+        self.assertIn("sg publish local", executed_command[2])
+        find_log.assert_called_once()
+        self.assertEqual(find_log.call_args.args[1], ["sg", "publish", "local"])
+        self.assertEqual(result["status"], "success")
+
+    def test_run_publish_job_keeps_cli_log_success_as_uncertain_without_terminal_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            with (
+                mock.patch.object(
+                    publish_script.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess(
+                        args=["sg", "publish", "local"],
+                        returncode=0,
+                        stdout="build complete\n",
+                        stderr="",
+                    ),
+                ),
+                mock.patch.object(
+                    publish_script,
+                    "find_publish_cli_log_entry",
+                    return_value={"status": "success"},
+                ),
+            ):
+                result = publish_script.run_publish_job(
+                    {
+                        "repo_key": "demo-repo",
+                        "repo_path": repo_path,
+                        "command": ["sg", "publish", "local"],
+                    }
+                )
+
+        self.assertEqual(result["status"], "uncertain")
+        self.assertIn("CLI log marked success", result["error_message"])
+
 
 class SyncTaskTests(unittest.TestCase):
     def test_run_sync_job_reports_dirty_worktree(self) -> None:
@@ -528,6 +683,32 @@ class TaskPortalTests(unittest.TestCase):
 
 
 class NextTaskWorkspaceTests(unittest.TestCase):
+    def test_create_task_render_plan_is_seed_version(self) -> None:
+        text = create_script.render_plan("拍照水印", ["pf-mproducer-supplier"])
+
+        self.assertIn("当前处于任务初始阶段时，默认使用种子版结构", text)
+        self.assertIn("## 当前初步判断", text)
+        self.assertIn("## 核心决策与原因", text)
+        self.assertIn("执行过程写到 `progress.md`", text)
+        self.assertNotIn("默认沉淀到 `progress.md`", text)
+        self.assertNotIn("## 项目惯例与复用结论", text)
+        self.assertNotIn("## 开发方案", text)
+
+    def test_create_task_render_decision_log_template(self) -> None:
+        text = create_script.render_decision_log("拍照水印")
+
+        self.assertIn("# 拍照水印 决策记录", text)
+        self.assertIn("候选方案", text)
+        self.assertIn("当前结论", text)
+        self.assertIn("默认不主动创建", text)
+        self.assertIn("影响 `plan.md` 阅读", text)
+
+    def test_create_task_render_progress_is_execution_record_only(self) -> None:
+        text = create_script.render_progress("拍照水印")
+
+        self.assertIn("当前有效方案、核心决策原因和上线口径写到 `plan.md`", text)
+        self.assertNotIn("## 关键取舍", text)
+
     def test_next_task_workspace_resets_current_stage_and_creates_new_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace_root = Path(tmpdir) / "workspace"
@@ -550,6 +731,7 @@ class NextTaskWorkspaceTests(unittest.TestCase):
                         "documents:",
                         '  index: "index.md"',
                         '  plan: "plan.md"',
+                        '  decision_log: "decision-log.md"',
                         '  progress: "progress.md"',
                         "",
                     ]
@@ -598,6 +780,7 @@ class NextTaskWorkspaceTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (task_docs_root / "plan.md").write_text("# 一期方案\n", encoding="utf-8")
+            (task_docs_root / "decision-log.md").write_text("# 一期决策记录\n", encoding="utf-8")
             (task_docs_root / "progress.md").write_text(
                 "# 部门转货 任务进度\n\n## 当前进展\n- 已完成：一期完成\n",
                 encoding="utf-8",
@@ -626,12 +809,18 @@ class NextTaskWorkspaceTests(unittest.TestCase):
             self.assertEqual(meta["phase"], 2)
             self.assertEqual(meta["current_task_name"], "加工单扫码支持托盘码二期")
             self.assertEqual(meta["active_plan"], "plan-加工单扫码支持托盘码二期.md")
+            self.assertNotIn("active_decision_log", meta)
             self.assertEqual(meta["repos"][0]["branch"], "加工单扫码支持托盘码二期")
             self.assertEqual(meta["previous_phases"][0]["plan"], "plan.md")
+            self.assertEqual(meta["previous_phases"][0]["decision_log"], "decision-log.md")
 
             new_plan_path = task_docs_root / "plan-加工单扫码支持托盘码二期.md"
             self.assertTrue(new_plan_path.exists())
-            self.assertIn("# 加工单扫码支持托盘码二期", new_plan_path.read_text(encoding="utf-8"))
+            new_plan_text = new_plan_path.read_text(encoding="utf-8")
+            self.assertIn("# 加工单扫码支持托盘码二期", new_plan_text)
+            self.assertIn("## 核心决策与原因", new_plan_text)
+            new_decision_log_path = task_docs_root / "decision-log-加工单扫码支持托盘码二期.md"
+            self.assertFalse(new_decision_log_path.exists())
 
             index_text = (task_docs_root / "index.md").read_text(encoding="utf-8")
             self.assertIn("- 当前状态：方案中", index_text)
@@ -643,6 +832,7 @@ class NextTaskWorkspaceTests(unittest.TestCase):
             progress_text = (task_docs_root / "progress.md").read_text(encoding="utf-8")
             self.assertIn("下一阶段开启", progress_text)
             self.assertIn("加工单扫码支持托盘码二期", progress_text)
+            self.assertNotIn("decision-log-加工单扫码支持托盘码二期.md", progress_text)
 
             commands = [call.args[0] for call in run_mock.call_args_list]
             self.assertIn(
@@ -684,6 +874,7 @@ class NextTaskWorkspaceTests(unittest.TestCase):
                         "documents:",
                         '  index: "index.md"',
                         '  plan: "plan.md"',
+                        '  decision_log: "decision-log.md"',
                         '  progress: "progress.md"',
                         "",
                     ]
@@ -712,6 +903,7 @@ class NextTaskWorkspaceTests(unittest.TestCase):
             )
             (task_docs_root / "index.md").write_text("# 加工扫托盘码\n", encoding="utf-8")
             (task_docs_root / "plan.md").write_text("# 一期方案\n", encoding="utf-8")
+            (task_docs_root / "decision-log.md").write_text("# 一期决策记录\n", encoding="utf-8")
             (task_docs_root / "progress.md").write_text("# 任务进度\n\n## 变更记录\n", encoding="utf-8")
 
             (task_code_root / "producer-backend__加工扫托盘码").mkdir()
@@ -742,12 +934,15 @@ class NextTaskWorkspaceTests(unittest.TestCase):
             meta = lib.load_yaml(task_docs_root / "meta.yaml")
             self.assertEqual(meta["phase"], 2)
             self.assertEqual(meta["current_task_name"], "先建优化任务-加工一个托盘码一行")
+            self.assertNotIn("active_decision_log", meta)
             self.assertEqual(meta["repos"][0]["branch"], "一期后端分支")
             self.assertEqual(meta["repos"][1]["branch"], "先建优化任务-加工一个托盘码一行")
 
             new_plan_path = task_docs_root / "plan-先建优化任务-加工一个托盘码一行.md"
             self.assertTrue(new_plan_path.exists())
             self.assertIn("涉及仓库：pf-mproducer-supplier", new_plan_path.read_text(encoding="utf-8"))
+            new_decision_log_path = task_docs_root / "decision-log-先建优化任务-加工一个托盘码一行.md"
+            self.assertFalse(new_decision_log_path.exists())
 
             commands = [call.args[0] for call in run_mock.call_args_list]
             self.assertIn(
@@ -775,6 +970,92 @@ class NextTaskWorkspaceTests(unittest.TestCase):
                 commands,
             )
 
+    def test_next_task_workspace_allows_previous_phase_branch_without_upstream(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir) / "workspace"
+            docs_root = workspace_root / "_docs"
+            tasks_root = workspace_root / "_tasks"
+            config_root = workspace_root / "config"
+            task_id = "2026-06-24-阶段切换"
+            task_docs_root = docs_root / task_id
+            task_code_root = tasks_root / task_id
+            repo_path = task_code_root / "producer-backend__阶段切换"
+            task_docs_root.mkdir(parents=True)
+            repo_path.mkdir(parents=True)
+            config_root.mkdir(parents=True)
+
+            (config_root / "workspace.yaml").write_text(
+                "\n".join(
+                    [
+                        f'workspace_root: "{workspace_root}"',
+                        f'tasks_root: "{tasks_root}"',
+                        f'docs_root: "{docs_root}"',
+                        "documents:",
+                        '  index: "index.md"',
+                        '  plan: "plan.md"',
+                        '  decision_log: "decision-log.md"',
+                        '  progress: "progress.md"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            (task_docs_root / "meta.yaml").write_text(
+                "\n".join(
+                    [
+                        f"task_id: {task_id}",
+                        "status: 已完成",
+                        "resume_status: 已完成",
+                        "coding_allowed: false",
+                        "repos:",
+                        "- key: producer-backend",
+                        "  repo_dir: producer-backend__阶段切换",
+                        "  branch: 已上线一期分支",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (task_docs_root / "index.md").write_text("# 阶段切换\n", encoding="utf-8")
+            (task_docs_root / "plan.md").write_text("# 一期方案\n", encoding="utf-8")
+            (task_docs_root / "decision-log.md").write_text("# 一期决策记录\n", encoding="utf-8")
+            (task_docs_root / "progress.md").write_text("# 任务进度\n\n## 变更记录\n", encoding="utf-8")
+
+            subprocess.run(["git", "-C", str(repo_path), "init"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(
+                ["git", "-C", str(repo_path), "checkout", "-b", "已上线一期分支"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+            with (
+                mock.patch.object(next_script, "run") as run_mock,
+                mock.patch("sys.argv", [
+                    "next_task_workspace.py",
+                    task_id,
+                    "二期新任务",
+                    "--config-root",
+                    str(config_root),
+                ]),
+            ):
+                self.assertEqual(next_script.main(), 0)
+
+            meta = lib.load_yaml(task_docs_root / "meta.yaml")
+            self.assertEqual(meta["phase"], 2)
+            self.assertEqual(meta["repos"][0]["branch"], "二期新任务")
+
+            commands = [call.args[0] for call in run_mock.call_args_list]
+            self.assertIn(
+                ["git", "-C", str(repo_path), "fetch", "origin", "--prune"],
+                commands,
+            )
+            self.assertIn(
+                ["git", "-C", str(repo_path), "checkout", "-B", "二期新任务", "origin/master"],
+                commands,
+            )
+
     def test_next_task_workspace_accepts_human_target_alias(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace_root = Path(tmpdir) / "workspace"
@@ -797,6 +1078,7 @@ class NextTaskWorkspaceTests(unittest.TestCase):
                         "documents:",
                         '  index: "index.md"',
                         '  plan: "plan.md"',
+                        '  decision_log: "decision-log.md"',
                         '  progress: "progress.md"',
                         "",
                     ]
@@ -845,6 +1127,7 @@ class NextTaskWorkspaceTests(unittest.TestCase):
             )
             (task_docs_root / "index.md").write_text("# 加工扫托盘码\n", encoding="utf-8")
             (task_docs_root / "plan.md").write_text("# 一期方案\n", encoding="utf-8")
+            (task_docs_root / "decision-log.md").write_text("# 一期决策记录\n", encoding="utf-8")
             (task_docs_root / "progress.md").write_text("# 任务进度\n\n## 变更记录\n", encoding="utf-8")
 
             (task_code_root / "producer-backend__加工扫托盘码").mkdir()

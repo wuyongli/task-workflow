@@ -731,6 +731,13 @@ def _resolve_node_version(repo_path: Path, package_json: dict[str, Any]) -> str 
     return None
 
 
+def resolve_node_version_for_repo(repo_path: Path) -> str | None:
+    package_json_path = repo_path / "package.json"
+    if not package_json_path.exists():
+        return None
+    return _resolve_node_version(repo_path, _load_json(package_json_path))
+
+
 def _render_node_frontend_environment(
     environment_name: str,
     node_version: str | None,
@@ -1183,7 +1190,8 @@ def validate_repo_state(repo_path: Path, require_remote_sync: bool, expected_bra
     try:
         upstream = run_git(repo_path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
     except subprocess.CalledProcessError:
-        issues.append("has no upstream branch")
+        if require_remote_sync:
+            issues.append("has no upstream branch")
         return issues
 
     if require_remote_sync:

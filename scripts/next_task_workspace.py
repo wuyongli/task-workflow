@@ -42,9 +42,21 @@ def _coerce_phase(value: Any) -> int:
     return 1
 
 
+def _phase_document_name(base_name: str, task_name: str) -> str:
+    path = Path(base_name)
+    suffix = path.suffix or ".md"
+    return f"{path.stem}-{task_name}{suffix}"
+
+
 def render_next_phase_plan(task_name: str, repo_keys: list[str], previous_task_name: str, previous_plan: str) -> str:
     repo_text = ", ".join(repo_keys)
     return f"""# {task_name}
+
+> 使用原则：
+> - 下一阶段默认从种子版计划开始，只写已确认的阶段目标、初步方案和待确认项
+> - 本文件只保留当前阶段有效方案；执行过程写到 `progress.md`
+> - 当前有效的取舍结论和原因写在本文件，历史推导过长时再拆 `decision-log`
+> - 当前阶段真正展开后，再扩展为正式版结构
 
 ## 阶段说明
 - 当前阶段任务：{task_name}
@@ -57,16 +69,17 @@ def render_next_phase_plan(task_name: str, repo_keys: list[str], previous_task_n
 - 目标：待补充
 - 当前结论：待补充
 
-## 当前有效方案
-- 当前推荐方案：待补充
+## 当前初步判断
+- 当前推荐方向：待补充
 - 涉及仓库：{repo_text}
 - 影响范围：待补充
+- 当前不确定点：待补充
 
-## 开发方案
-- 主改仓：待补充
-- 配套影响仓：待补充
-- 关键实现路径：待补充
-- 自测与回归计划：待补充
+## 核心决策与原因
+- 当前决策：待补充
+- 决策原因：待补充
+- 不采用的路径：待补充
+- 对范围/开发/上线的影响：待补充
 
 ## 开发准入确认
 - 方案是否已确认：未确认
@@ -190,7 +203,6 @@ def main() -> int:
     docs_root = Path(workspace_cfg["docs_root"])
     tasks_root = Path(workspace_cfg["tasks_root"])
     documents = workspace_cfg.get("documents", {})
-    require_remote_sync = bool(workspace_cfg.get("cleanup_requires_remote_sync", True))
     repo_cfg_by_key = {
         str(repo["key"]): repo
         for repo in repositories_cfg.get("repositories", [])
@@ -202,7 +214,7 @@ def main() -> int:
 
     next_task_name = sanitize_task_segment(args.next_task_name)
     next_branch_name = sanitize_branch_name(next_task_name)
-    next_plan_name = f"plan-{next_task_name}.md"
+    next_plan_name = _phase_document_name(str(documents.get("plan", "plan.md")), next_task_name)
     docs_task_root = docs_root / args.task_id
     next_plan_path = docs_task_root / next_plan_name
     if next_plan_path.exists():
@@ -238,7 +250,9 @@ def main() -> int:
         repo_keys.append(repo_key)
         repo_path = resolve_repo_path(tasks_root, args.task_id, repo_meta)
         expected_branch = str(repo_meta.get("branch") or "")
-        issues = validate_repo_state(repo_path, require_remote_sync, expected_branch or None)
+        # `next` only needs a clean workspace and the recorded local branch.
+        # The previous phase branch may already have been deleted from origin after release.
+        issues = validate_repo_state(repo_path, False, expected_branch or None)
         if issues:
             failed = True
             print(f"[FAIL] {repo_key} -> {repo_path}")
@@ -263,18 +277,24 @@ def main() -> int:
 
     previous_task_name = str(meta.get("current_task_name") or _task_theme_name(args.task_id))
     previous_plan_name = str(meta.get("active_plan") or documents.get("plan", "plan.md"))
+    previous_decision_log_name = str(meta.get("active_decision_log") or "").strip()
+    if not previous_decision_log_name:
+        default_decision_log_name = str(documents.get("decision_log", "") or "").strip()
+        if default_decision_log_name and (docs_task_root / default_decision_log_name).exists():
+            previous_decision_log_name = default_decision_log_name
     current_phase = _coerce_phase(meta.get("phase"))
     previous_phases = meta.get("previous_phases")
     if not isinstance(previous_phases, list):
         previous_phases = []
-    previous_phases.append(
-        {
-            "phase": current_phase,
-            "task_name": previous_task_name,
-            "status": str(meta.get("status") or "已完成"),
-            "plan": previous_plan_name,
-        }
-    )
+    previous_phase = {
+        "phase": current_phase,
+        "task_name": previous_task_name,
+        "status": str(meta.get("status") or "已完成"),
+        "plan": previous_plan_name,
+    }
+    if previous_decision_log_name:
+        previous_phase["decision_log"] = previous_decision_log_name
+    previous_phases.append(previous_phase)
 
     meta["status"] = "方案中"
     meta["resume_status"] = "方案中"
@@ -282,6 +302,7 @@ def main() -> int:
     meta["phase"] = current_phase + 1
     meta["current_task_name"] = next_task_name
     meta["active_plan"] = next_plan_name
+    meta.pop("active_decision_log", None)
     meta["previous_phases"] = previous_phases
     save_yaml(meta_path, meta, args.dry_run)
 
@@ -302,7 +323,13 @@ def main() -> int:
         ),
         args.dry_run,
     )
-    update_progress_for_next_phase(progress_path, next_task_name, next_branch_name, next_plan_name, args.dry_run)
+    update_progress_for_next_phase(
+        progress_path,
+        next_task_name,
+        next_branch_name,
+        next_plan_name,
+        args.dry_run,
+    )
     print("task next phase ready")
     return 0
 
