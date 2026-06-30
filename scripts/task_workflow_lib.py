@@ -1017,7 +1017,50 @@ def start_repo_runtime(repo_cfg: dict[str, Any], repo_path: Path, dry_run: bool)
             if not allow_failure:
                 raise
             warnings.append(f"{step['command']} @ {cwd}: {exc}")
+    if str(runtime_cfg.get("mode") or "").strip() == "shared-backend-app":
+        summary = _ensure_shared_backend_test_tools(repo_cfg, runtime_cfg, repo_path, dry_run)
+        executed.extend(summary["executed"])
+        warnings.extend(summary["warnings"])
     return {"executed": executed, "warnings": warnings}
+
+
+def _ensure_shared_backend_test_tools(
+    repo_cfg: dict[str, Any],
+    runtime_cfg: dict[str, Any],
+    repo_path: Path,
+    dry_run: bool,
+) -> dict[str, list[str]]:
+    if runtime_cfg.get("ensure_pytest") is False:
+        return {"executed": [], "warnings": []}
+
+    env_rel_path = str(runtime_cfg.get("task_env_file", "docker/.task.env"))
+    compose_rel_path = str(runtime_cfg.get("task_compose_file", "docker/docker-compose.task.yml"))
+    env_path = repo_path / env_rel_path
+    compose_path = repo_path / compose_rel_path
+    if not env_path.exists() or not compose_path.exists():
+        return {
+            "executed": [],
+            "warnings": [f"{repo_cfg.get('key')}: task docker files missing, skip pytest check"],
+        }
+
+    docker_dir = compose_path.parent
+    compose_name = compose_path.name
+    env_name = env_path.name
+    pytest_version = str(runtime_cfg.get("pytest_version") or "7.4.4")
+    install_index = str(runtime_cfg.get("pip_index_url") or "https://mirrors.aliyun.com/pypi/simple/")
+    command = (
+        f"docker compose --env-file {env_name} -f {compose_name} exec -T app sh -lc "
+        f"'python -m pytest --version >/dev/null 2>&1 || "
+        f"python -m pip install -i {install_index} pytest=={pytest_version}'"
+    )
+    try:
+        run_shell(command, dry_run, docker_dir)
+        return {"executed": [f"{command} @ {docker_dir}"], "warnings": []}
+    except subprocess.CalledProcessError as exc:
+        return {
+            "executed": [],
+            "warnings": [f"{repo_cfg.get('key')}: pytest check/install failed: {exc}"],
+        }
 
 
 def stop_task_runtime(repo_cfg: dict[str, Any], repo_path: Path, dry_run: bool) -> list[str]:

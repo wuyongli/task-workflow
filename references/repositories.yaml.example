@@ -13,6 +13,9 @@ repositories:
       task_env_file: "docker/.task.env"
       task_compose_file: "docker/docker-compose.task.yml"
       task_app_image: "pf-app:latest"
+      ensure_pytest: true
+      pytest_version: "7.4.4"
+      pip_index_url: "https://mirrors.aliyun.com/pypi/simple/"
       shared_front_network: "pf_front-tier"
       shared_back_network: "pf_back-tier"
       app_port_start: 18897

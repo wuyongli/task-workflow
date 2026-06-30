@@ -60,6 +60,63 @@ class StartRepoRuntimeTests(unittest.TestCase):
             self.assertEqual(len(summary["executed"]), 1)
             self.assertEqual(len(summary["warnings"]), 1)
 
+    def test_start_repo_runtime_ensures_pytest_for_shared_backend_app(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            docker_dir = repo_path / "docker"
+            docker_dir.mkdir()
+            (docker_dir / ".task.env").write_text("COMPOSE_PROJECT_NAME=demo\n", encoding="utf-8")
+            (docker_dir / "docker-compose.task.yml").write_text("services:\n  app:\n", encoding="utf-8")
+            repo_cfg = {
+                "key": "producer-backend",
+                "runtime": {
+                    "mode": "shared-backend-app",
+                    "auto_start_on_prepare": True,
+                    "auto_start_steps": [
+                        {
+                            "cwd": "__TASK_DOCKER_DIR__",
+                            "command": "docker compose --env-file .task.env -f docker-compose.task.yml up -d app",
+                        },
+                    ],
+                },
+            }
+
+            with mock.patch.object(lib, "run_shell") as run_shell_mock:
+                summary = lib.start_repo_runtime(repo_cfg, repo_path, dry_run=False)
+
+        commands = [call.args[0] for call in run_shell_mock.call_args_list]
+        self.assertIn("docker compose --env-file .task.env -f docker-compose.task.yml up -d app", commands)
+        self.assertTrue(any("python -m pytest --version" in command for command in commands))
+        self.assertTrue(any("pytest==7.4.4" in command for command in commands))
+        self.assertEqual(summary["warnings"], [])
+
+    def test_start_repo_runtime_warns_when_pytest_install_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            docker_dir = repo_path / "docker"
+            docker_dir.mkdir()
+            (docker_dir / ".task.env").write_text("COMPOSE_PROJECT_NAME=demo\n", encoding="utf-8")
+            (docker_dir / "docker-compose.task.yml").write_text("services:\n  app:\n", encoding="utf-8")
+            repo_cfg = {
+                "key": "producer-backend",
+                "runtime": {
+                    "mode": "shared-backend-app",
+                    "auto_start_on_prepare": True,
+                    "auto_start_steps": [],
+                },
+            }
+
+            with mock.patch.object(
+                lib,
+                "run_shell",
+                side_effect=subprocess.CalledProcessError(1, "docker compose exec app"),
+            ):
+                summary = lib.start_repo_runtime(repo_cfg, repo_path, dry_run=False)
+
+        self.assertEqual(summary["executed"], [])
+        self.assertEqual(len(summary["warnings"]), 1)
+        self.assertIn("pytest check/install failed", summary["warnings"][0])
+
 
 class FrontendLocalBackendPatchTests(unittest.TestCase):
     def test_rewrite_node_frontend_environment_creates_missing_environment_toml(self) -> None:
@@ -435,6 +492,58 @@ class PublishTargetTests(unittest.TestCase):
         self.assertEqual(result["returncode"], 0)
         self.assertEqual(result["log_status"], "failed")
         self.assertIn("CONFLICTS:", result["error_message"])
+
+    def test_parse_unmerged_files_reads_porcelain_conflict_entries(self) -> None:
+        status_short = "\n".join(
+            [
+                "UU pfsource/demo.py",
+                "AA src/demo.ts",
+                " M unrelated.py",
+            ]
+        )
+
+        self.assertEqual(
+            publish_script.parse_unmerged_files(status_short),
+            ["pfsource/demo.py", "src/demo.ts"],
+        )
+
+    def test_run_publish_job_reports_develop_merge_conflict_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            with (
+                mock.patch.object(
+                    publish_script.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess(
+                        args=["sg", "publish", "local"],
+                        returncode=1,
+                        stdout="CONFLICTS: src/demo.ts\n",
+                        stderr="",
+                    ),
+                ),
+                mock.patch.object(publish_script, "find_publish_cli_log_entry", return_value=None),
+                mock.patch.object(
+                    publish_script,
+                    "read_publish_repo_state",
+                    return_value={
+                        "branch": "develop",
+                        "status_short": "UU src/demo.ts",
+                        "unmerged_files": ["src/demo.ts"],
+                        "merge_in_progress": True,
+                    },
+                ),
+            ):
+                result = publish_script.run_publish_job(
+                    {
+                        "repo_key": "demo-repo",
+                        "repo_path": repo_path,
+                        "command": ["sg", "publish", "local"],
+                    }
+                )
+
+        self.assertEqual(result["status"], "conflict")
+        self.assertIn("branch develop", result["error_message"])
+        self.assertEqual(result["repo_state"]["unmerged_files"], ["src/demo.ts"])
 
     def test_run_publish_job_requires_explicit_success_signal_for_local_publish(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

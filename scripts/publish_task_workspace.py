@@ -128,6 +128,55 @@ def build_publish_execution_command(command: list[str], node_version: str | None
     return ["zsh", "-lc", shell_command]
 
 
+def read_git_text(repo_path: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), *args],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def merge_head_exists(repo_path: Path) -> bool:
+    merge_head_path = read_git_text(repo_path, "rev-parse", "--git-path", "MERGE_HEAD")
+    if not merge_head_path:
+        return False
+    path = Path(merge_head_path)
+    if not path.is_absolute():
+        path = repo_path / path
+    return path.exists()
+
+
+def parse_unmerged_files(status_short: str) -> list[str]:
+    files: list[str] = []
+    for line in status_short.splitlines():
+        if len(line) < 4:
+            continue
+        code = line[:2]
+        if "U" not in code and code not in {"AA", "DD"}:
+            continue
+        files.append(line[3:].strip())
+    return files
+
+
+def read_publish_repo_state(repo_path: Path) -> dict[str, object]:
+    status_short = read_git_text(repo_path, "status", "--porcelain")
+    branch = read_current_branch(repo_path)
+    unmerged_files = parse_unmerged_files(status_short)
+    return {
+        "branch": branch,
+        "status_short": status_short,
+        "unmerged_files": unmerged_files,
+        "merge_in_progress": merge_head_exists(repo_path),
+    }
+
+
+def repo_has_merge_conflict(repo_state: dict[str, object]) -> bool:
+    unmerged_files = repo_state.get("unmerged_files")
+    return bool(unmerged_files) or bool(repo_state.get("merge_in_progress"))
+
+
 def run_publish_job(job: dict[str, object]) -> dict[str, object]:
     command = list(job["command"])
     execution_command = build_publish_execution_command(command, str(job.get("node_version") or "") or None)
@@ -137,6 +186,16 @@ def run_publish_job(job: dict[str, object]) -> dict[str, object]:
     ended_at_ms = int(time.time() * 1000)
     log_entry = find_publish_cli_log_entry(repo_path, command, started_at_ms, ended_at_ms)
     status, error_message = classify_publish_result(command, result.returncode, result.stdout, result.stderr, log_entry)
+    repo_state: dict[str, object] = {}
+    if status != "success":
+        repo_state = read_publish_repo_state(repo_path)
+    if repo_state and repo_has_merge_conflict(repo_state):
+        status = "conflict"
+        branch = str(repo_state.get("branch") or "")
+        error_message = (
+            f"publish left a local merge conflict on branch {branch}; keep this branch, "
+            "resolve the conflict here, then retry publish"
+        )
     return {
         "repo_key": job["repo_key"],
         "returncode": result.returncode,
@@ -146,6 +205,7 @@ def run_publish_job(job: dict[str, object]) -> dict[str, object]:
         "error_message": error_message,
         "log_status": str(log_entry.get("status") or "") if isinstance(log_entry, dict) else "",
         "execution_command": execution_command,
+        "repo_state": repo_state,
     }
 
 
@@ -197,7 +257,12 @@ def main() -> int:
         actual_branch = read_current_branch(repo_path)
         if actual_branch in {"missing", "not-a-git-repo", "detached"}:
             raise ValueError(f"repo {repo_key} is not publishable: {actual_branch}")
-        if recorded_branch and actual_branch != recorded_branch:
+        status_short = read_git_text(repo_path, "status", "--porcelain")
+        publish_develop_retry = actual_branch == "develop"
+        publish_conflict_retry = publish_develop_retry and (
+            merge_head_exists(repo_path) or bool(parse_unmerged_files(status_short))
+        )
+        if recorded_branch and actual_branch != recorded_branch and not publish_develop_retry:
             raise ValueError(
                 f"repo {repo_key} current branch is {actual_branch}, expected recorded branch {recorded_branch}"
             )
@@ -212,6 +277,10 @@ def main() -> int:
         print(f"[PLAN] {repo_key}")
         print(f"  path: {repo_path}")
         print(f"  branch: {actual_branch}")
+        if publish_conflict_retry:
+            print("  mode: develop conflict retry")
+        elif publish_develop_retry and recorded_branch and recorded_branch != actual_branch:
+            print("  mode: develop publish retry")
         print(f"  command: {' '.join(command)}")
         if node_version:
             print(f"  node: {node_version}")
@@ -243,6 +312,32 @@ def main() -> int:
             error_message = str(result.get("error_message") or "")
             if status == "success":
                 print(f"[OK] {repo_key}")
+            elif status == "conflict":
+                print(f"[CONFLICT] {repo_key}")
+                if error_message:
+                    print(f"  reason: {error_message}")
+                repo_state = result.get("repo_state")
+                if isinstance(repo_state, dict):
+                    branch = str(repo_state.get("branch") or "")
+                    status_short = str(repo_state.get("status_short") or "")
+                    unmerged_files = repo_state.get("unmerged_files")
+                    if branch:
+                        print(f"  branch: {branch}")
+                    print("  next: keep this branch; do not merge --abort or checkout the task branch")
+                    print("  next: resolve conflicts here, run minimal validation, then retry publish")
+                    if isinstance(unmerged_files, list) and unmerged_files:
+                        print("  unmerged files:")
+                        for path in unmerged_files:
+                            print(f"    - {path}")
+                    if status_short.strip():
+                        print("  git status --porcelain:")
+                        print(status_short.rstrip())
+                if stdout.strip():
+                    print("  stdout:")
+                    print(stdout.rstrip())
+                if stderr.strip():
+                    print("  stderr:")
+                    print(stderr.rstrip())
             elif status == "uncertain":
                 print(f"[UNCERTAIN] {repo_key}")
                 if error_message:
@@ -268,8 +363,9 @@ def main() -> int:
     success = [item for item in results if str(item.get("status") or "") == "success"]
     failed = [item for item in results if str(item.get("status") or "") == "failed"]
     uncertain = [item for item in results if str(item.get("status") or "") == "uncertain"]
-    print(f"[SUMMARY] success={len(success)} failed={len(failed)} uncertain={len(uncertain)}")
-    return 1 if failed or uncertain else 0
+    conflicts = [item for item in results if str(item.get("status") or "") == "conflict"]
+    print(f"[SUMMARY] success={len(success)} failed={len(failed)} uncertain={len(uncertain)} conflict={len(conflicts)}")
+    return 1 if failed or uncertain or conflicts else 0
 
 
 if __name__ == "__main__":
