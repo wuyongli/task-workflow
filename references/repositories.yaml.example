@@ -2,7 +2,10 @@ repositories:
   - key: "producer-backend"
     path: "/Users/wuyongli/Documents/sg-project/producer-backend"
     remote: "git@example.com:group/producer-backend.git"
-    notes: "Main backend repo"
+    notes: "产地通后端"
+    aliases:
+      - "产地后端"
+      - "产地通后端"
     runtime:
       mode: "shared-backend-app"
       copy_missing_from_main:
@@ -20,6 +23,10 @@ repositories:
       shared_back_network: "pf_back-tier"
       app_port_start: 18897
       app_port_end: 18996
+      mysql_data_switch:
+        compose_dir: "/path/to/main/producer-backend/docker"
+        container_name: "pf-mysql-1"
+        mount_destination: "/var/lib/mysql"
       auto_start_on_prepare: true
       auto_start_steps:
         - cwd: "/path/to/main/producer-backend/docker"
@@ -40,10 +47,125 @@ repositories:
         - "Generate task-scoped compose files that only start the app container against shared infra."
         - "Prefer reusing a prebuilt local app image such as pf-app:latest when available."
 
+  - key: "pf-backend"
+    path: "/Users/wuyongli/Documents/sg-project/pf-backend"
+    remote: "git@example.com:group/pf-backend.git"
+    notes: "批发后端"
+    aliases:
+      - "批发后端"
+    runtime:
+      mode: "shared-backend-app"
+      copy_missing_from_main:
+        - "pfsource/settings.py"
+      copy_missing_from_template:
+        - source: "pfsource/settings_local.py"
+          target: "pfsource/settings.py"
+      task_env_file: "docker/.task.env"
+      task_compose_file: "docker/docker-compose.task.yml"
+      task_app_image: "pf-app:latest"
+      ensure_pytest: true
+      pytest_version: "7.4.4"
+      pip_index_url: "https://mirrors.aliyun.com/pypi/simple/"
+      shared_front_network: "pf_front-tier"
+      shared_back_network: "pf_back-tier"
+      app_port_start: 19097
+      app_port_end: 19196
+      mysql_data_switch:
+        compose_dir: "/path/to/main/pf-backend/docker"
+        container_name: "pf-mysql-1"
+        mount_destination: "/var/lib/mysql"
+      auto_start_on_prepare: true
+      auto_start_steps:
+        - cwd: "/path/to/main/pf-backend/docker"
+          command: "docker compose up -d mysql redis rabbitmq mongo"
+        - cwd: "/path/to/main/pf-backend/docker"
+          command: "docker compose up -d nginx"
+          allow_failure: true
+        - cwd: "__TASK_DOCKER_DIR__"
+          command: "docker compose --env-file .task.env -f docker-compose.task.yml up -d app"
+      install_commands:
+        - "pip install -r requirements.txt"
+      start_commands:
+        - "cd /path/to/main/pf-backend/docker && docker compose up -d mysql redis rabbitmq mongo"
+        - "cd /path/to/main/pf-backend/docker && docker compose up -d nginx"
+        - "cd docker && docker compose --env-file .task.env -f docker-compose.task.yml up -d app"
+      notes:
+        - "Copy local settings.py from the main repo when the task clone does not have it."
+        - "Treat a zero-byte settings.py as missing and refill it."
+        - "Use a repo-scoped Compose project and a dedicated port range while sharing the wholesale backend infrastructure."
+
+  - key: "senguo-pf-easy-mobile"
+    path: "/Users/wuyongli/Documents/sg-project/senguo-pf-easy-mobile"
+    remote: "git@example.com:group/senguo-pf-easy-mobile.git"
+    notes: "批发手机前端"
+    aliases:
+      - "批发手机前端"
+      - "批发移动端"
+    runtime:
+      mode: "patch-node-frontend-environment"
+      task_env_file: ".codex/task-runtime.env"
+      task_port_key: "TASK_WEB_PORT"
+      app_port_start: 3209
+      app_port_end: 3249
+      copy_missing_from_main:
+        - ".env.development"
+        - "src/setupProxy.js"
+      local_backend_proxy_js_file: "src/setupProxy.js"
+      local_backend_repo_key: "pf-backend"
+      backend_task_env_file: "docker/.task.env"
+      local_backend_proxy_host: "localhost"
+      local_backend_proxy_js_http_constants:
+        - "PROXY_TARGET_ADDRESS"
+      local_backend_proxy_js_ws_constants:
+        - "WS_PROXY_TARGET_ADDRESS"
+      environment_toml: ".codex/environments/environment.toml"
+      install_commands:
+        - "npm install"
+      start_commands:
+        - "npm run start"
+      notes:
+        - "Generate a task-scoped .codex/task-runtime.env so each task clone keeps a stable frontend port."
+        - "Patch src/setupProxy.js so the task repo uses the sibling wholesale backend task port by default."
+
+  - key: "senguo-pf-manage-frontend"
+    path: "/Users/wuyongli/Documents/sg-project/senguo-pf-manage-frontend"
+    remote: "git@example.com:group/senguo-pf-manage-frontend.git"
+    notes: "批发 PC 前端"
+    aliases:
+      - "批发PC前端"
+      - "批发pc前端"
+      - "批发管理前端"
+    runtime:
+      mode: "patch-node-frontend-environment"
+      task_env_file: ".codex/task-runtime.env"
+      task_port_key: "TASK_WEB_PORT"
+      app_port_start: 3309
+      app_port_end: 3349
+      copy_missing_from_main:
+        - ".env.development"
+        - "dev_config/settings.json"
+      local_backend_json_file: "dev_config/settings.json"
+      local_backend_json_fields:
+        - "PROXY_TARGET_ADDRESS"
+      local_backend_repo_key: "pf-backend"
+      backend_task_env_file: "docker/.task.env"
+      local_backend_proxy_host: "localhost"
+      environment_toml: ".codex/environments/environment.toml"
+      install_commands:
+        - "npm install"
+      start_commands:
+        - "npm run serve"
+      notes:
+        - "Generate a task-scoped .codex/task-runtime.env so each task clone keeps a stable frontend port."
+        - "Patch dev_config/settings.json so the task repo uses the sibling wholesale backend task port by default."
+
   - key: "pf-mproducer-supplier"
     path: "/Users/wuyongli/Documents/sg-project/pf-mproducer-supplier"
     remote: "git@example.com:group/pf-mproducer-supplier.git"
-    notes: "Related mobile frontend repo"
+    notes: "产地通手机前端"
+    aliases:
+      - "产地手机前端"
+      - "产地通手机前端"
     runtime:
       mode: "patch-node-frontend-environment"
       task_env_file: ".codex/task-runtime.env"
@@ -70,7 +192,12 @@ repositories:
   - key: "pf-producer-supplier"
     path: "/Users/wuyongli/Documents/sg-project/pf-producer-supplier"
     remote: "git@example.com:group/pf-producer-supplier.git"
-    notes: "Related PC frontend repo"
+    notes: "产地通 PC 前端"
+    aliases:
+      - "产地PC前端"
+      - "产地pc前端"
+      - "产地通PC前端"
+      - "产地通pc前端"
     runtime:
       mode: "patch-node-frontend-environment"
       task_env_file: ".codex/task-runtime.env"

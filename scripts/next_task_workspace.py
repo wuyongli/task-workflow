@@ -25,6 +25,7 @@ from task_workflow_lib import (
 
 DEFAULT_CONFIG_ROOT = Path("/Users/wuyongli/Documents/sg-project/_workspace/config")
 NEXT_BASE_BRANCH = "master"
+NEXT_ALLOWED_STATUSES = ("开发中", "测试中", "已完成")
 
 
 def _task_theme_name(task_id: str) -> str:
@@ -210,7 +211,9 @@ def main() -> int:
     }
 
     meta_path, meta = load_task_meta(docs_root, args.task_id)
-    require_task_status(meta, ("已完成",), "next")
+    previous_status = require_task_status(meta, NEXT_ALLOWED_STATUSES, "next")
+    if previous_status != "已完成":
+        print(f"[INFO] current status is {previous_status}; treat /task-workflow next as previous stage completed")
 
     next_task_name = sanitize_task_segment(args.next_task_name)
     next_branch_name = sanitize_branch_name(next_task_name)
@@ -289,7 +292,7 @@ def main() -> int:
     previous_phase = {
         "phase": current_phase,
         "task_name": previous_task_name,
-        "status": str(meta.get("status") or "已完成"),
+        "status": "已完成",
         "plan": previous_plan_name,
     }
     if previous_decision_log_name:

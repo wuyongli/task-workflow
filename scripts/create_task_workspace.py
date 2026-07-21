@@ -13,6 +13,8 @@ from task_workflow_lib import (
     load_yaml,
     prepare_repo_runtime,
     prepare_repo_from_default,
+    resolve_requested_repo_keys_or_aliases,
+    safe_remove_empty_dir,
     safe_remove_path,
     sanitize_branch_name,
     sanitize_task_segment,
@@ -197,9 +199,7 @@ def main() -> int:
     task_docs_root = docs_root / task_id
 
     repo_map = {repo["key"]: repo for repo in repositories_cfg.get("repositories", [])}
-    missing = [repo_key for repo_key in args.repos if repo_key not in repo_map]
-    if missing:
-        raise ValueError(f"unknown repo keys: {', '.join(missing)}")
+    repo_keys = resolve_requested_repo_keys_or_aliases(args.repos, list(repo_map), repo_map)
 
     if task_code_root.exists() or task_docs_root.exists():
         raise FileExistsError(f"task code or docs already exist: {task_id}")
@@ -207,7 +207,7 @@ def main() -> int:
     print(f"task code dir: {task_code_root}")
     print(f"docs dir: {task_docs_root}")
     print(f"default branch: {branch_name}")
-    print(f"repos: {', '.join(args.repos)}")
+    print(f"repos: {', '.join(repo_keys)}")
 
     created_paths: list[Path] = []
     try:
@@ -217,7 +217,7 @@ def main() -> int:
             created_paths.extend([task_code_root, task_docs_root])
 
         repo_meta_rows: list[dict[str, str]] = []
-        for repo_key in args.repos:
+        for repo_key in repo_keys:
             repo_cfg = repo_map[repo_key]
             remote = str(repo_cfg["remote"])
             repo_dir_name = build_repo_dir_name(repo_key, raw_task_name)
@@ -271,7 +271,7 @@ def main() -> int:
         progress_name = documents.get("progress", "progress.md")
 
         write_text(task_docs_root / index_name, render_index(raw_task_name), args.dry_run)
-        write_text(task_docs_root / plan_name, render_plan(raw_task_name, args.repos), args.dry_run)
+        write_text(task_docs_root / plan_name, render_plan(raw_task_name, repo_keys), args.dry_run)
         write_text(task_docs_root / progress_name, render_progress(raw_task_name), args.dry_run)
 
         meta = {
@@ -286,9 +286,16 @@ def main() -> int:
         }
         save_yaml(task_docs_root / "meta.yaml", meta, args.dry_run)
 
+        if args.dry_run:
+            safe_remove_empty_dir(task_docs_root, dry_run=False)
+            safe_remove_empty_dir(task_code_root, dry_run=False)
+
         print("task workspace create complete")
         return 0
     except Exception:
+        if args.dry_run:
+            safe_remove_empty_dir(task_docs_root, dry_run=False)
+            safe_remove_empty_dir(task_code_root, dry_run=False)
         for path in reversed(created_paths):
             safe_remove_path(path, args.dry_run)
         raise

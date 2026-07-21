@@ -177,6 +177,39 @@ def repo_has_merge_conflict(repo_state: dict[str, object]) -> bool:
     return bool(unmerged_files) or bool(repo_state.get("merge_in_progress"))
 
 
+def restore_recorded_branch(repo_path: Path, recorded_branch: str) -> dict[str, object]:
+    current_branch = read_current_branch(repo_path)
+    status_short = read_git_text(repo_path, "status", "--porcelain")
+    if status_short.strip():
+        return {
+            "ok": False,
+            "branch": current_branch,
+            "target_branch": recorded_branch,
+            "reason": "working tree is not clean after publish",
+            "status_short": status_short,
+            "stdout": "",
+            "stderr": "",
+        }
+
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "checkout", recorded_branch],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    final_branch = read_current_branch(repo_path)
+    ok = result.returncode == 0 and final_branch == recorded_branch
+    return {
+        "ok": ok,
+        "branch": final_branch,
+        "target_branch": recorded_branch,
+        "reason": "" if ok else f"failed to restore branch {recorded_branch}",
+        "status_short": read_git_text(repo_path, "status", "--porcelain"),
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+    }
+
+
 def run_publish_job(job: dict[str, object]) -> dict[str, object]:
     command = list(job["command"])
     execution_command = build_publish_execution_command(command, str(job.get("node_version") or "") or None)
@@ -196,8 +229,16 @@ def run_publish_job(job: dict[str, object]) -> dict[str, object]:
             f"publish left a local merge conflict on branch {branch}; keep this branch, "
             "resolve the conflict here, then retry publish"
         )
+    restore_result: dict[str, object] = {}
+    if status == "success" and bool(job.get("restore_branch_after_success")):
+        recorded_branch = str(job.get("recorded_branch") or "")
+        restore_result = restore_recorded_branch(repo_path, recorded_branch)
+        if not bool(restore_result.get("ok")):
+            status = "restore_failed"
+            error_message = str(restore_result.get("reason") or "failed to restore task branch after publish")
     return {
         "repo_key": job["repo_key"],
+        "repo_path": str(repo_path),
         "returncode": result.returncode,
         "stdout": result.stdout,
         "stderr": result.stderr,
@@ -206,13 +247,14 @@ def run_publish_job(job: dict[str, object]) -> dict[str, object]:
         "log_status": str(log_entry.get("status") or "") if isinstance(log_entry, dict) else "",
         "execution_command": execution_command,
         "repo_state": repo_state,
+        "restore_result": restore_result,
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Publish selected task repos with task-workflow defaults.")
     parser.add_argument("task_id", help="Task id such as 2026-06-03-部门转货")
-    parser.add_argument("targets", nargs="+", help="Publish targets such as 后端 / 前端 / 手机前端 / PC前端")
+    parser.add_argument("targets", nargs="*", help="Publish targets such as 后端 / 前端 / 手机前端 / PC前端")
     parser.add_argument("--config-root", type=Path, default=DEFAULT_CONFIG_ROOT)
     args = parser.parse_args()
 
@@ -290,6 +332,11 @@ def main() -> int:
                 "repo_path": repo_path,
                 "command": command,
                 "node_version": node_version,
+                "recorded_branch": recorded_branch,
+                "started_branch": actual_branch,
+                "restore_branch_after_success": (
+                    publish_develop_retry and bool(recorded_branch) and recorded_branch != actual_branch
+                ),
             }
         )
 
@@ -312,6 +359,9 @@ def main() -> int:
             error_message = str(result.get("error_message") or "")
             if status == "success":
                 print(f"[OK] {repo_key}")
+                restore_result = result.get("restore_result")
+                if isinstance(restore_result, dict) and restore_result.get("ok"):
+                    print(f"  restored branch: {restore_result.get('target_branch')}")
             elif status == "conflict":
                 print(f"[CONFLICT] {repo_key}")
                 if error_message:
@@ -338,6 +388,30 @@ def main() -> int:
                 if stderr.strip():
                     print("  stderr:")
                     print(stderr.rstrip())
+            elif status == "restore_failed":
+                print(f"[RESTORE_FAILED] {repo_key}")
+                if error_message:
+                    print(f"  reason: {error_message}")
+                restore_result = result.get("restore_result")
+                if isinstance(restore_result, dict):
+                    branch = str(restore_result.get("branch") or "")
+                    target_branch = str(restore_result.get("target_branch") or "")
+                    status_short = str(restore_result.get("status_short") or "")
+                    if branch:
+                        print(f"  current branch: {branch}")
+                    if target_branch:
+                        print(f"  expected branch: {target_branch}")
+                    if status_short.strip():
+                        print("  git status --porcelain:")
+                        print(status_short.rstrip())
+                    restore_stdout = str(restore_result.get("stdout") or "")
+                    restore_stderr = str(restore_result.get("stderr") or "")
+                    if restore_stdout.strip():
+                        print("  checkout stdout:")
+                        print(restore_stdout.rstrip())
+                    if restore_stderr.strip():
+                        print("  checkout stderr:")
+                        print(restore_stderr.rstrip())
             elif status == "uncertain":
                 print(f"[UNCERTAIN] {repo_key}")
                 if error_message:
@@ -364,8 +438,12 @@ def main() -> int:
     failed = [item for item in results if str(item.get("status") or "") == "failed"]
     uncertain = [item for item in results if str(item.get("status") or "") == "uncertain"]
     conflicts = [item for item in results if str(item.get("status") or "") == "conflict"]
-    print(f"[SUMMARY] success={len(success)} failed={len(failed)} uncertain={len(uncertain)} conflict={len(conflicts)}")
-    return 1 if failed or uncertain or conflicts else 0
+    restore_failed = [item for item in results if str(item.get("status") or "") == "restore_failed"]
+    print(
+        f"[SUMMARY] success={len(success)} failed={len(failed)} uncertain={len(uncertain)} "
+        f"conflict={len(conflicts)} restore_failed={len(restore_failed)}"
+    )
+    return 1 if failed or uncertain or conflicts or restore_failed else 0
 
 
 if __name__ == "__main__":

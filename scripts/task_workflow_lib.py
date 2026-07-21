@@ -15,10 +15,10 @@ from pypinyin import lazy_pinyin
 
 
 PUBLISH_TARGET_ALIASES: dict[str, set[str]] = {
-    "backend": {"产地后端", "后端", "产地通后端", "backend"},
-    "frontend": {"产地前端", "前端", "frontend"},
-    "mobile_frontend": {"产地手机前端", "手机前端", "手机端", "移动端", "产地通手机前端", "mobilefrontend"},
-    "pc_frontend": {"产地pc前端", "pc前端", "pc端", "产地通pc前端", "pcfrontend"},
+    "backend": {"后端", "backend"},
+    "frontend": {"前端", "frontend"},
+    "mobile_frontend": {"手机前端", "手机端", "移动端", "mobilefrontend"},
+    "pc_frontend": {"pc前端", "pc端", "pcfrontend"},
 }
 
 PUBLISH_KIND_ORDER = {
@@ -72,13 +72,13 @@ def _extract_task_parts(task_id: str) -> tuple[str, str]:
     return f"{yyyy}{mm}{dd}", raw_task_name
 
 
-def build_task_compose_name(task_id: str) -> str:
+def build_task_compose_name(task_id: str, repo_key: str) -> str:
     date_part, raw_task_name = _extract_task_parts(task_id)
     pinyin_parts = lazy_pinyin(raw_task_name, errors="ignore")
     task_pinyin = "".join(part.lower() for part in pinyin_parts if part.strip())
     if not task_pinyin:
         task_pinyin = "task"
-    return sanitize_compose_name(f"{date_part}-{task_pinyin}")
+    return sanitize_compose_name(f"{date_part}-{task_pinyin}-{repo_key}")
 
 
 def build_repo_dir_name(repo_key: str, raw_task_name: str) -> str:
@@ -101,6 +101,36 @@ def resolve_publish_target_kind(raw_target: str) -> str:
             return target_kind
     supported = "、".join(sorted(alias for aliases in PUBLISH_TARGET_ALIASES.values() for alias in aliases))
     raise ValueError(f"unknown publish target: {raw_target}. supported targets: {supported}")
+
+
+def _repo_aliases(repo_key: str, repo_cfg: dict[str, Any]) -> list[str]:
+    aliases = [repo_key]
+    raw_aliases = repo_cfg.get("aliases")
+    if isinstance(raw_aliases, list):
+        aliases.extend(str(alias) for alias in raw_aliases if str(alias).strip())
+    return aliases
+
+
+def resolve_repo_alias_key(
+    raw_target: str,
+    bound_repo_keys: list[str],
+    repo_cfg_by_key: dict[str, dict[str, Any]],
+) -> str | None:
+    normalized = normalize_publish_target(raw_target)
+    matches: list[str] = []
+    for repo_key in bound_repo_keys:
+        repo_cfg = repo_cfg_by_key.get(repo_key)
+        if repo_cfg is None:
+            continue
+        normalized_aliases = {normalize_publish_target(alias) for alias in _repo_aliases(repo_key, repo_cfg)}
+        if normalized in normalized_aliases:
+            matches.append(repo_key)
+
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError(f"repo alias target is ambiguous: {raw_target} -> {', '.join(matches)}")
+    return None
 
 
 def ordered_target_kinds(target_kinds: list[str]) -> list[str]:
@@ -130,9 +160,19 @@ def resolve_requested_repo_keys(
     if not raw_targets:
         return list(bound_repo_keys)
 
-    target_kinds = normalize_requested_target_kinds([resolve_publish_target_kind(target) for target in raw_targets])
     resolved: list[str] = []
     seen: set[str] = set()
+    alias_targets: list[str] = []
+    for raw_target in raw_targets:
+        repo_key = resolve_repo_alias_key(raw_target, bound_repo_keys, repo_cfg_by_key)
+        if repo_key is None:
+            alias_targets.append(raw_target)
+            continue
+        if repo_key not in seen:
+            seen.add(repo_key)
+            resolved.append(repo_key)
+
+    target_kinds = normalize_requested_target_kinds([resolve_publish_target_kind(target) for target in alias_targets])
     for target_kind in target_kinds:
         repo_key = resolve_task_publish_repo_key(target_kind, bound_repo_keys, repo_cfg_by_key)
         if repo_key in seen:
@@ -161,6 +201,12 @@ def resolve_requested_repo_keys_or_aliases(
             if normalized not in seen:
                 seen.add(normalized)
                 resolved.append(normalized)
+            continue
+        repo_key = resolve_repo_alias_key(raw_target, bound_repo_keys, repo_cfg_by_key)
+        if repo_key is not None:
+            if repo_key not in seen:
+                seen.add(repo_key)
+                resolved.append(repo_key)
             continue
         alias_targets.append(raw_target)
 
@@ -271,6 +317,34 @@ def copy_file(src: Path, dest: Path, dry_run: bool) -> None:
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dest)
+
+
+def should_prepare_local_file(target: Path, prepared_targets: set[Path]) -> bool:
+    if target in prepared_targets:
+        return False
+    if not target.exists():
+        return True
+    return target.is_file() and target.stat().st_size == 0
+
+
+def _ensure_local_git_excludes(repo_path: Path, rel_paths: list[str], dry_run: bool) -> None:
+    exclude_path = repo_path / ".git/info/exclude"
+    if not exclude_path.parent.is_dir():
+        return
+
+    existing_text = exclude_path.read_text(encoding="utf-8") if exclude_path.exists() else ""
+    existing_lines = set(existing_text.splitlines())
+    missing_paths = [rel_path for rel_path in rel_paths if rel_path not in existing_lines]
+    if not missing_paths:
+        return
+
+    print(f"update local git excludes: {exclude_path}")
+    if dry_run:
+        return
+    prefix = existing_text.rstrip("\n")
+    updated_lines = [prefix] if prefix else []
+    updated_lines.extend(missing_paths)
+    exclude_path.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
 
 
 def run(cmd: list[str], dry_run: bool, capture: bool = False) -> str:
@@ -662,6 +736,91 @@ def _docker_image_exists(image_ref: str) -> bool:
     return result.returncode == 0
 
 
+def inspect_container_mount_source(container_name: str, mount_destination: str) -> str | None:
+    result = subprocess.run(
+        ["docker", "inspect", container_name, "--format", "{{json .Mounts}}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        mounts = json.loads(result.stdout.strip() or "[]")
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"failed to parse docker inspect mounts for {container_name}") from exc
+    if not isinstance(mounts, list):
+        raise ValueError(f"invalid docker inspect mounts for {container_name}")
+    for mount in mounts:
+        if not isinstance(mount, dict):
+            continue
+        if mount.get("Destination") == mount_destination:
+            source = mount.get("Source")
+            return str(source) if source else None
+    return None
+
+
+def _resolve_mysql_data_switch_config(repo_cfg: dict[str, Any]) -> dict[str, str]:
+    runtime_cfg = repo_cfg.get("runtime") or {}
+    if not isinstance(runtime_cfg, dict):
+        raise ValueError(f"runtime config for repo {repo_cfg.get('key')} must be a mapping")
+
+    raw_cfg = runtime_cfg.get("mysql_data_switch")
+    if not isinstance(raw_cfg, dict):
+        raise ValueError(f"repo {repo_cfg.get('key')} has no mysql_data_switch config")
+
+    compose_dir_text = str(raw_cfg.get("compose_dir") or "").strip()
+    if not compose_dir_text:
+        raise ValueError(f"repo {repo_cfg.get('key')} mysql_data_switch requires compose_dir")
+
+    compose_dir = Path(compose_dir_text)
+    data_dir_text = str(raw_cfg.get("data_dir") or "").strip()
+    data_dir = Path(data_dir_text) if data_dir_text else compose_dir / "data/mysql"
+    container_name = str(raw_cfg.get("container_name") or "pf-mysql-1")
+    mount_destination = str(raw_cfg.get("mount_destination") or "/var/lib/mysql")
+    service = str(raw_cfg.get("service") or "mysql")
+
+    return {
+        "compose_dir": str(compose_dir),
+        "data_dir": str(data_dir),
+        "container_name": container_name,
+        "mount_destination": mount_destination,
+        "service": service,
+    }
+
+
+def switch_mysql_data_dir(repo_cfg: dict[str, Any], dry_run: bool) -> dict[str, str | None]:
+    cfg = _resolve_mysql_data_switch_config(repo_cfg)
+    current_data_dir = inspect_container_mount_source(cfg["container_name"], cfg["mount_destination"])
+    target_data_dir = cfg["data_dir"]
+
+    if current_data_dir == target_data_dir:
+        return {
+            "repo_key": str(repo_cfg.get("key") or ""),
+            "status": "already",
+            "container_name": cfg["container_name"],
+            "previous_data_dir": current_data_dir,
+            "target_data_dir": target_data_dir,
+            "command": None,
+        }
+
+    command = ["docker", "compose", "up", "-d"]
+    if current_data_dir:
+        command.append("--force-recreate")
+    command.append(cfg["service"])
+    print("$", " ".join(command), f"(cwd={cfg['compose_dir']})")
+    if not dry_run:
+        subprocess.run(command, check=True, text=True, cwd=cfg["compose_dir"])
+
+    return {
+        "repo_key": str(repo_cfg.get("key") or ""),
+        "status": "switched" if current_data_dir else "started",
+        "container_name": cfg["container_name"],
+        "previous_data_dir": current_data_dir,
+        "target_data_dir": target_data_dir,
+        "command": " ".join(command),
+    }
+
+
 def _render_shared_backend_compose(front_network: str, back_network: str, app_image: str | None) -> str:
     lines = [
         "services:",
@@ -840,7 +999,11 @@ def _rewrite_node_frontend_environment(
 ) -> dict[str, list[str]]:
     package_json_path = repo_path / "package.json"
     if not package_json_path.exists():
-        raise ValueError(f"missing package.json for repo {repo_cfg.get('key')}: {repo_path}")
+        source_package_json_path = Path(str(repo_cfg.get("path") or "")) / "package.json"
+        if dry_run and source_package_json_path.exists():
+            package_json_path = source_package_json_path
+        else:
+            raise ValueError(f"missing package.json for repo {repo_cfg.get('key')}: {repo_path}")
 
     package_json = _load_json(package_json_path)
     install_commands = _as_string_list(runtime_cfg.get("install_commands"))
@@ -848,7 +1011,7 @@ def _rewrite_node_frontend_environment(
     if not install_commands or not start_commands:
         raise ValueError(f"node frontend runtime requires install_commands and start_commands: {repo_cfg.get('key')}")
 
-    node_version = _resolve_node_version(repo_path, package_json)
+    node_version = _resolve_node_version(package_json_path.parent, package_json)
     environment_name = str(package_json.get("name") or repo_cfg["key"])
     environment_rel_path = str(runtime_cfg.get("environment_toml", ".codex/environments/environment.toml"))
     environment_path = repo_path / environment_rel_path
@@ -925,6 +1088,25 @@ def _patch_local_producer_proxy_target(
     }
 
 
+def _resolve_local_backend_port(
+    runtime_cfg: dict[str, Any],
+    repo_path: Path,
+    target_rel_path: str,
+) -> tuple[str | None, list[str]]:
+    task_root = repo_path.parent
+    backend_repo_key = str(runtime_cfg.get("local_backend_repo_key", "producer-backend"))
+    backend_repo_path = _find_task_repo_path(task_root, backend_repo_key)
+    if backend_repo_path is None:
+        return None, [f"未找到同任务后端仓库 {backend_repo_key}，跳过 {target_rel_path} 本地后端修正"]
+
+    backend_env_rel = str(runtime_cfg.get("backend_task_env_file", "docker/.task.env"))
+    backend_env = _parse_env_file(backend_repo_path / backend_env_rel)
+    port = backend_env.get("TASK_APP_HOST_PORT")
+    if not port:
+        return None, [f"未找到后端任务端口配置 {backend_env_rel}，跳过 {target_rel_path} 本地后端修正"]
+    return port, []
+
+
 def _patch_frontend_local_backend_env(
     runtime_cfg: dict[str, Any],
     repo_path: Path,
@@ -934,23 +1116,9 @@ def _patch_frontend_local_backend_env(
     if not env_rel_path:
         return {"generated_files": [], "notes": []}
 
-    task_root = repo_path.parent
-    backend_repo_key = str(runtime_cfg.get("local_backend_repo_key", "producer-backend"))
-    backend_repo_path = _find_task_repo_path(task_root, backend_repo_key)
-    if backend_repo_path is None:
-        return {
-            "generated_files": [],
-            "notes": [f"未找到同任务后端仓库 {backend_repo_key}，跳过 {env_rel_path} 本地后端修正"],
-        }
-
-    backend_env_rel = str(runtime_cfg.get("backend_task_env_file", "docker/.task.env"))
-    backend_env = _parse_env_file(backend_repo_path / backend_env_rel)
-    port = backend_env.get("TASK_APP_HOST_PORT")
+    port, notes = _resolve_local_backend_port(runtime_cfg, repo_path, env_rel_path)
     if not port:
-        return {
-            "generated_files": [],
-            "notes": [f"未找到后端任务端口配置 {backend_env_rel}，跳过 {env_rel_path} 本地后端修正"],
-        }
+        return {"generated_files": [], "notes": notes}
 
     env_path = repo_path / env_rel_path
     if not env_path.exists():
@@ -989,6 +1157,106 @@ def _patch_frontend_local_backend_env(
     return {
         "generated_files": [env_rel_path],
         "notes": [f"{env_rel_path} 已对齐本地后端地址：{proxy_target} / {api_target}"],
+    }
+
+
+def _patch_frontend_local_backend_json(
+    runtime_cfg: dict[str, Any],
+    repo_path: Path,
+    dry_run: bool,
+) -> dict[str, list[str]]:
+    json_rel_path = str(runtime_cfg.get("local_backend_json_file") or "").strip()
+    if not json_rel_path:
+        return {"generated_files": [], "notes": []}
+
+    port, notes = _resolve_local_backend_port(runtime_cfg, repo_path, json_rel_path)
+    if not port:
+        return {"generated_files": [], "notes": notes}
+
+    json_path = repo_path / json_rel_path
+    if not json_path.exists():
+        return {
+            "generated_files": [],
+            "notes": [f"未找到 {json_rel_path}，跳过本地后端修正"],
+        }
+
+    target_fields = _as_string_list(runtime_cfg.get("local_backend_json_fields")) or ["PROXY_TARGET_ADDRESS"]
+    proxy_host = str(runtime_cfg.get("local_backend_proxy_host", "localhost"))
+    proxy_target = f"http://{proxy_host}:{port}"
+
+    data = _load_json(json_path)
+    updated = False
+    for field in target_fields:
+        if field in data and data[field] != proxy_target:
+            data[field] = proxy_target
+            updated = True
+
+    if not updated:
+        return {
+            "generated_files": [],
+            "notes": [f"{json_rel_path} 中未匹配到本地后端相关字段，跳过修正"],
+        }
+
+    write_text(json_path, json.dumps(data, ensure_ascii=False, indent="\t") + "\n", dry_run)
+    return {
+        "generated_files": [json_rel_path],
+        "notes": [f"{json_rel_path} 已对齐本地后端地址：{proxy_target}"],
+    }
+
+
+def _patch_frontend_local_backend_proxy_js(
+    runtime_cfg: dict[str, Any],
+    repo_path: Path,
+    dry_run: bool,
+) -> dict[str, list[str]]:
+    proxy_rel_path = str(runtime_cfg.get("local_backend_proxy_js_file") or "").strip()
+    if not proxy_rel_path:
+        return {"generated_files": [], "notes": []}
+
+    port, notes = _resolve_local_backend_port(runtime_cfg, repo_path, proxy_rel_path)
+    if not port:
+        return {"generated_files": [], "notes": notes}
+
+    proxy_path = repo_path / proxy_rel_path
+    if not proxy_path.exists():
+        return {
+            "generated_files": [],
+            "notes": [f"未找到 {proxy_rel_path}，跳过本地后端修正"],
+        }
+
+    proxy_host = str(runtime_cfg.get("local_backend_proxy_host", "localhost"))
+    proxy_target = f"http://{proxy_host}:{port}"
+    ws_target = f"ws://{proxy_host}:{port}"
+    http_constants = _as_string_list(runtime_cfg.get("local_backend_proxy_js_http_constants")) or ["PROXY_TARGET_ADDRESS"]
+    ws_constants = _as_string_list(runtime_cfg.get("local_backend_proxy_js_ws_constants"))
+
+    text = proxy_path.read_text(encoding="utf-8")
+    updated = text
+    changed_constants: list[str] = []
+    for constant in http_constants:
+        pattern = rf"(const\s+{re.escape(constant)}\s*=\s*['\"])[^'\"]*(['\"])"
+        next_updated = re.sub(pattern, rf"\g<1>{proxy_target}\g<2>", updated, count=1)
+        if next_updated != updated:
+            changed_constants.append(constant)
+            updated = next_updated
+    for constant in ws_constants:
+        pattern = rf"(const\s+{re.escape(constant)}\s*=\s*['\"])[^'\"]*(['\"])"
+        next_updated = re.sub(pattern, rf"\g<1>{ws_target}\g<2>", updated, count=1)
+        if next_updated != updated:
+            changed_constants.append(constant)
+            updated = next_updated
+
+    if updated == text:
+        return {
+            "generated_files": [],
+            "notes": [f"{proxy_rel_path} 中未匹配到本地后端相关常量，跳过修正"],
+        }
+
+    write_text(proxy_path, updated, dry_run)
+    constants_text = ", ".join(changed_constants)
+    return {
+        "generated_files": [proxy_rel_path],
+        "notes": [f"{proxy_rel_path} 已对齐本地后端地址：{proxy_target} ({constants_text})"],
     }
 
 
@@ -1104,11 +1372,13 @@ def _prepare_shared_backend_runtime(
         port_start,
         port_end,
     )
-    compose_project_name = build_task_compose_name(task_id)
+    compose_project_name = build_task_compose_name(task_id, repo_key)
     resolved_app_image = task_app_image if task_app_image and _docker_image_exists(task_app_image) else None
 
+    generated_files = [env_rel_path, compose_rel_path]
     write_text(env_path, _render_shared_backend_task_env(compose_project_name, app_host_port), dry_run)
     write_text(compose_path, _render_shared_backend_compose(front_network, back_network, resolved_app_image), dry_run)
+    _ensure_local_git_excludes(repo_path, generated_files, dry_run)
 
     warnings: list[str] = []
     notes = [
@@ -1121,7 +1391,7 @@ def _prepare_shared_backend_runtime(
         warnings.append(f"未找到本地镜像 {task_app_image}，任务 app 将回退为当前任务仓库自行构建")
 
     return {
-        "generated_files": [env_rel_path, compose_rel_path],
+        "generated_files": generated_files,
         "notes": notes,
         "warnings": warnings,
     }
@@ -1141,7 +1411,7 @@ def prepare_repo_runtime(repo_cfg: dict[str, Any], repo_path: Path, dry_run: boo
 
     for rel_path in _as_string_list(runtime_cfg.get("copy_missing_from_main")):
         target = repo_path / rel_path
-        if target.exists() or target in prepared_targets:
+        if not should_prepare_local_file(target, prepared_targets):
             continue
         source = source_repo / rel_path
         if not source.exists():
@@ -1157,7 +1427,7 @@ def prepare_repo_runtime(repo_cfg: dict[str, Any], repo_path: Path, dry_run: boo
         if not source_rel or not target_rel:
             raise ValueError("runtime template copy items require source and target")
         target = repo_path / target_rel
-        if target.exists() or target in prepared_targets:
+        if not should_prepare_local_file(target, prepared_targets):
             continue
         source = repo_path / source_rel
         if not source.exists():
@@ -1190,12 +1460,19 @@ def prepare_repo_runtime(repo_cfg: dict[str, Any], repo_path: Path, dry_run: boo
         )
         generated_files.extend(generated["generated_files"])
         generated_notes.extend(generated["notes"])
-        proxy_patch = _patch_local_producer_proxy_target(runtime_cfg, repo_path, dry_run)
-        generated_files.extend(proxy_patch["generated_files"])
-        generated_notes.extend(proxy_patch["notes"])
+        if runtime_cfg.get("producer_proxy_config_file"):
+            proxy_patch = _patch_local_producer_proxy_target(runtime_cfg, repo_path, dry_run)
+            generated_files.extend(proxy_patch["generated_files"])
+            generated_notes.extend(proxy_patch["notes"])
         env_patch = _patch_frontend_local_backend_env(runtime_cfg, repo_path, dry_run)
         generated_files.extend(env_patch["generated_files"])
         generated_notes.extend(env_patch["notes"])
+        json_patch = _patch_frontend_local_backend_json(runtime_cfg, repo_path, dry_run)
+        generated_files.extend(json_patch["generated_files"])
+        generated_notes.extend(json_patch["notes"])
+        proxy_js_patch = _patch_frontend_local_backend_proxy_js(runtime_cfg, repo_path, dry_run)
+        generated_files.extend(proxy_js_patch["generated_files"])
+        generated_notes.extend(proxy_js_patch["notes"])
 
     return {
         "copied_from_main": copied_from_main,

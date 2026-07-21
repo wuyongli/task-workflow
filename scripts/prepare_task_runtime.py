@@ -6,7 +6,14 @@ import argparse
 import subprocess
 from pathlib import Path
 
-from task_workflow_lib import load_task_meta, load_yaml, prepare_repo_runtime, resolve_repo_path, start_repo_runtime
+from task_workflow_lib import (
+    load_task_meta,
+    load_yaml,
+    prepare_repo_runtime,
+    resolve_repo_path,
+    resolve_requested_repo_keys_or_aliases,
+    start_repo_runtime,
+)
 
 
 DEFAULT_CONFIG_ROOT = Path("/Users/wuyongli/Documents/sg-project/_workspace/config")
@@ -28,11 +35,8 @@ def main() -> int:
     _meta_path, task_meta = load_task_meta(docs_root, args.task_id)
     repo_map = {repo["key"]: repo for repo in repositories_cfg.get("repositories", [])}
 
-    selected = set(args.repos or [])
-    if selected:
-        missing = sorted(selected.difference(repo_map))
-        if missing:
-            raise ValueError(f"unknown repo keys: {', '.join(missing)}")
+    bound_repo_keys = [str(repo_meta["key"]) for repo_meta in task_meta.get("repos", [])]
+    selected = set(resolve_requested_repo_keys_or_aliases(args.repos or [], bound_repo_keys, repo_map)) if args.repos else set()
 
     for repo_meta in task_meta.get("repos", []):
         repo_key = str(repo_meta["key"])

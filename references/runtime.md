@@ -2,7 +2,7 @@
 
 ## 后端测试环境
 
-适用于 `producer-backend` 任务工作区。
+适用于配置为 `shared-backend-app` 的后端任务工作区。
 
 规则：
 - 后端测试优先在当前任务自己的后端仓库根目录运行
@@ -10,6 +10,8 @@
 - 如果宿主机依赖不完整、Python 版本不匹配，或测试涉及运行时依赖，切换到当前任务 Docker app 容器
 - 不要用共享主仓 `producer-backend` 容器验证任务 clone，除非已经确认该容器挂载的就是当前任务代码目录
 - 任务 app 容器由当前任务仓库的 `docker/.task.env` 和 `docker/docker-compose.task.yml` 定义，测试时应在任务后端仓库根目录执行
+- 同一任务绑定多个后端时，每个后端使用“任务 ID + repo key”生成独立 `COMPOSE_PROJECT_NAME`；容器、volume 挂载和停止命令互不复用
+- 多个后端应在 `repositories.yaml` 中配置不重叠的 `app_port_start` / `app_port_end`，基础 MySQL、Redis、RabbitMQ、Mongo 和 Docker 网络仍可共享
 - 如果 app 容器未启动，先用当前任务 compose 文件启动 app
 
 推荐容器测试命令：
@@ -40,6 +42,11 @@ docker compose --env-file docker/.env --env-file docker/.task.env \
 - `task_env_file` / `task_compose_file`: generated helper files for backend runtime presets
 - `task_port_key`: optional env key name stored in the task runtime env file for frontend port pinning
 - `task_app_image`: optional local image tag to reuse for backend task app containers before falling back to per-task builds
+- `mysql_data_switch`: optional explicit MySQL data-directory switch config for backend repos
+  - `compose_dir`: main repo docker directory used as the target MySQL data owner
+  - `container_name`: shared MySQL container name, default `pf-mysql-1`
+  - `mount_destination`: MySQL data mount destination, default `/var/lib/mysql`
+  - `data_dir`: target host data dir, default `<compose_dir>/data/mysql`
 - `ensure_pytest`: for `shared-backend-app`, default `true`; after the task app starts, ensure `pytest` is available inside the task container
 - `pytest_version`: pytest version installed by the backend task container bootstrap, default `7.4.4`
 - `pip_index_url`: pip index used when installing backend task test tools, default Aliyun PyPI mirror
@@ -48,6 +55,18 @@ docker compose --env-file docker/.env --env-file docker/.task.env \
 - `install_commands`: commands to install dependencies
 - `start_commands`: commands to start the repo locally
 - `notes`: short runtime remarks for the agent
+- 前端如需自动连同任务后端，优先配置 `local_backend_repo_key` + `backend_task_env_file`，从后端 `TASK_APP_HOST_PORT` 读取端口
+- `.env` 类前端使用 `local_backend_env_file`，会修正 `VITE_DEV_PROXY_TARGET` / `VITE_PF_API_URL`
+- `dev_config/settings.json` 类前端使用 `local_backend_json_file` + `local_backend_json_fields`，例如批发 PC 端修正 `PROXY_TARGET_ADDRESS`
+- `src/setupProxy.js` 类前端使用 `local_backend_proxy_js_file`，并用 `local_backend_proxy_js_http_constants` / `local_backend_proxy_js_ws_constants` 指定要替换的常量
+- 产地手机端的 `producer_proxy_config_file` 只处理 `vite.proxy.config.mjs`；不要把它当成通用前端代理规则
+
+MySQL 数据目录切换：
+- `/task-workflow mysql <目标后端>` 只切换 `mysql_data_switch` 指向的 MySQL 数据目录
+- 指令会检查 `pf-mysql-1` 当前 `/var/lib/mysql` 的 host mount source
+- 当前目录已匹配目标时 no-op；不匹配时执行 `docker compose up -d --force-recreate mysql`
+- 不切 Redis、Mongo、RabbitMQ、Nginx；不补字段、不导数据、不迁移
+- 切换后正在连接 MySQL 的任务 app 可能需要重启
 
 发布约定：
 - `shared-backend-app` 默认视为后端仓库，发布命令为 `sg publish jenkins`
@@ -72,4 +91,3 @@ docker compose --env-file docker/.env --env-file docker/.task.env \
 - default document filenames
 
 模板：[workspace.yaml.example](workspace.yaml.example)
-

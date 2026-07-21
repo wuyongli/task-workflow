@@ -15,8 +15,10 @@ import publish_task_workspace as publish_script
 import render_task_dev_portal as portal_script
 import serve_task_dev_portal as portal_server_script
 import sync_task_workspace as sync_script
+import switch_task_mysql as mysql_script
 import task_workflow_lib as lib
 import create_task_workspace as create_script
+import prepare_task_runtime as prepare_runtime_script
 import next_task_workspace as next_script
 import complete_task_workspace as complete_script
 import cleanup_task_workspace as cleanup_script
@@ -30,6 +32,43 @@ class PortAvailabilityTests(unittest.TestCase):
             port = server.getsockname()[1]
 
             self.assertFalse(lib._port_is_available(port))
+
+
+class SharedBackendComposeNameTests(unittest.TestCase):
+    def test_compose_project_name_is_scoped_by_task_and_repo(self) -> None:
+        task_id = "2026-04-28-价格行情重构"
+
+        producer_name = lib.build_task_compose_name(task_id, "producer-backend")
+        wholesale_name = lib.build_task_compose_name(task_id, "pf-backend")
+
+        self.assertEqual(producer_name, "20260428-jiagehangqingzhonggou-producer-backend")
+        self.assertEqual(wholesale_name, "20260428-jiagehangqingzhonggou-pf-backend")
+        self.assertNotEqual(producer_name, wholesale_name)
+
+    def test_prepare_runtime_locally_excludes_generated_docker_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source_repo = root / "source"
+            repo_path = root / "tasks" / "2026-04-28-价格行情重构" / "pf-backend__价格行情重构"
+            source_repo.mkdir()
+            (repo_path / ".git/info").mkdir(parents=True)
+            exclude_path = repo_path / ".git/info/exclude"
+            exclude_path.write_text(".local/\n", encoding="utf-8")
+
+            with mock.patch.object(lib, "_pick_task_port", return_value=19097):
+                lib.prepare_repo_runtime(
+                    {
+                        "key": "pf-backend",
+                        "path": str(source_repo),
+                        "runtime": {"mode": "shared-backend-app"},
+                    },
+                    repo_path,
+                    dry_run=False,
+                )
+
+            excludes = exclude_path.read_text(encoding="utf-8").splitlines()
+            self.assertIn("docker/.task.env", excludes)
+            self.assertIn("docker/docker-compose.task.yml", excludes)
 
 
 class StartRepoRuntimeTests(unittest.TestCase):
@@ -118,7 +157,114 @@ class StartRepoRuntimeTests(unittest.TestCase):
         self.assertIn("pytest check/install failed", summary["warnings"][0])
 
 
+class MysqlSwitchTests(unittest.TestCase):
+    def test_resolve_mysql_switch_target_uses_repo_alias(self) -> None:
+        repo_cfg_by_key = {
+            "producer-backend": {
+                "key": "producer-backend",
+                "aliases": ["产地后端"],
+                "runtime": {"mode": "shared-backend-app", "mysql_data_switch": {"compose_dir": "/producer/docker"}},
+            },
+            "pf-backend": {
+                "key": "pf-backend",
+                "aliases": ["批发后端"],
+                "runtime": {"mode": "shared-backend-app", "mysql_data_switch": {"compose_dir": "/pf/docker"}},
+            },
+        }
+
+        repo_key, repo_cfg = mysql_script.resolve_mysql_switch_target("批发后端", repo_cfg_by_key)
+
+        self.assertEqual(repo_key, "pf-backend")
+        self.assertEqual(repo_cfg["key"], "pf-backend")
+
+    def test_switch_mysql_noops_when_mount_already_matches(self) -> None:
+        repo_cfg = {
+            "key": "pf-backend",
+            "runtime": {
+                "mysql_data_switch": {
+                    "compose_dir": "/Users/demo/pf-backend/docker",
+                    "container_name": "pf-mysql-1",
+                    "mount_destination": "/var/lib/mysql",
+                }
+            },
+        }
+
+        with (
+            mock.patch.object(
+                lib,
+                "inspect_container_mount_source",
+                return_value="/Users/demo/pf-backend/docker/data/mysql",
+            ),
+            mock.patch.object(lib.subprocess, "run") as run_mock,
+        ):
+            result = lib.switch_mysql_data_dir(repo_cfg, dry_run=False)
+
+        self.assertEqual(result["status"], "already")
+        self.assertEqual(result["previous_data_dir"], "/Users/demo/pf-backend/docker/data/mysql")
+        self.assertEqual(result["target_data_dir"], "/Users/demo/pf-backend/docker/data/mysql")
+        run_mock.assert_not_called()
+
+    def test_switch_mysql_recreates_mysql_when_mount_differs(self) -> None:
+        repo_cfg = {
+            "key": "pf-backend",
+            "runtime": {
+                "mysql_data_switch": {
+                    "compose_dir": "/Users/demo/pf-backend/docker",
+                    "container_name": "pf-mysql-1",
+                    "mount_destination": "/var/lib/mysql",
+                }
+            },
+        }
+
+        with (
+            mock.patch.object(
+                lib,
+                "inspect_container_mount_source",
+                return_value="/Users/demo/producer-backend/docker/data/mysql",
+            ),
+            mock.patch.object(lib.subprocess, "run") as run_mock,
+        ):
+            result = lib.switch_mysql_data_dir(repo_cfg, dry_run=False)
+
+        self.assertEqual(result["status"], "switched")
+        self.assertEqual(result["previous_data_dir"], "/Users/demo/producer-backend/docker/data/mysql")
+        self.assertEqual(result["target_data_dir"], "/Users/demo/pf-backend/docker/data/mysql")
+        run_mock.assert_called_once_with(
+            ["docker", "compose", "up", "-d", "--force-recreate", "mysql"],
+            check=True,
+            text=True,
+            cwd="/Users/demo/pf-backend/docker",
+        )
+
+
 class FrontendLocalBackendPatchTests(unittest.TestCase):
+    def test_prepare_repo_runtime_replaces_zero_byte_local_file_from_main(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source_repo = root / "source"
+            task_repo = root / "task"
+            source_repo.mkdir()
+            task_repo.mkdir()
+            (source_repo / "pfsource").mkdir()
+            (task_repo / "pfsource").mkdir()
+            (source_repo / "pfsource/settings.py").write_text('DB_NAME = "senguopf"\n', encoding="utf-8")
+            (task_repo / "pfsource/settings.py").write_text("", encoding="utf-8")
+
+            summary = lib.prepare_repo_runtime(
+                {
+                    "key": "pf-backend",
+                    "path": str(source_repo),
+                    "runtime": {
+                        "copy_missing_from_main": ["pfsource/settings.py"],
+                    },
+                },
+                task_repo,
+                dry_run=False,
+            )
+
+            self.assertEqual(summary["copied_from_main"], ["pfsource/settings.py"])
+            self.assertEqual((task_repo / "pfsource/settings.py").read_text(encoding="utf-8"), 'DB_NAME = "senguopf"\n')
+
     def test_rewrite_node_frontend_environment_creates_missing_environment_toml(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir)
@@ -145,6 +291,66 @@ class FrontendLocalBackendPatchTests(unittest.TestCase):
             self.assertIn('name = "demo-frontend"', content)
             self.assertIn("npm run dev -- --port 3110 --strictPort", content)
             self.assertEqual(summary["generated_files"], [".codex/environments/environment.toml"])
+
+    def test_rewrite_node_frontend_environment_dry_run_uses_source_package_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source_repo = root / "source"
+            task_repo = root / "task"
+            source_repo.mkdir()
+            task_repo.mkdir()
+            (source_repo / "package.json").write_text(
+                '{"name":"source-frontend","scripts":{"start":"vite --host 0.0.0.0"},"volta":{"node":"18.17.0"}}',
+                encoding="utf-8",
+            )
+
+            summary = lib._rewrite_node_frontend_environment(
+                {"key": "source-frontend", "path": str(source_repo)},
+                {
+                    "environment_toml": ".codex/environments/environment.toml",
+                    "install_commands": ["npm install"],
+                    "start_commands": ["npm run start"],
+                },
+                task_repo,
+                assigned_port=3210,
+                dry_run=True,
+            )
+
+            self.assertEqual(summary["generated_files"], [".codex/environments/environment.toml"])
+            self.assertFalse((task_repo / ".codex/environments/environment.toml").exists())
+
+    def test_prepare_node_frontend_runtime_without_producer_proxy_config_skips_proxy_patch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source_repo = root / "source"
+            task_repo = root / "task-root" / "senguo-pf-easy-mobile__demo"
+            source_repo.mkdir(parents=True)
+            task_repo.mkdir(parents=True)
+            (source_repo / "package.json").write_text(
+                '{"name":"wholesale-mobile","scripts":{"start":"vite --host 0.0.0.0"},"volta":{"node":"18.17.0"}}',
+                encoding="utf-8",
+            )
+
+            summary = lib.prepare_repo_runtime(
+                {
+                    "key": "senguo-pf-easy-mobile",
+                    "path": str(source_repo),
+                    "runtime": {
+                        "mode": "patch-node-frontend-environment",
+                        "task_env_file": ".codex/task-runtime.env",
+                        "task_port_key": "TASK_WEB_PORT",
+                        "app_port_start": 3209,
+                        "app_port_end": 3249,
+                        "environment_toml": ".codex/environments/environment.toml",
+                        "install_commands": ["npm install"],
+                        "start_commands": ["npm run start"],
+                    },
+                },
+                task_repo,
+                dry_run=True,
+            )
+
+            self.assertNotIn("producer-backend", "\n".join(summary["notes"]))
 
     def test_patch_frontend_local_backend_env_updates_proxy_and_api_urls(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -189,6 +395,90 @@ class FrontendLocalBackendPatchTests(unittest.TestCase):
             self.assertIn('VITE_DEV_PROXY_TARGET = "http://localhost:18897"', updated)
             self.assertIn('VITE_PF_API_URL = "http://pfzone.senguo.cc:18897"', updated)
             self.assertEqual(summary["generated_files"], [".env.development"])
+
+    def test_patch_frontend_local_backend_proxy_js_updates_wholesale_mobile_proxy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            task_root = Path(tmpdir) / "2026-06-04-demo-task"
+            backend_repo = task_root / "pf-backend__demo-task"
+            frontend_repo = task_root / "senguo-pf-easy-mobile__demo-task"
+            backend_repo.mkdir(parents=True)
+            (frontend_repo / "src").mkdir(parents=True)
+
+            (backend_repo / "docker").mkdir()
+            (backend_repo / "docker/.task.env").write_text(
+                "COMPOSE_PROJECT_NAME=20260604-demo-pf-backend\nTASK_APP_HOST_PORT=19097\n",
+                encoding="utf-8",
+            )
+            (frontend_repo / "src/setupProxy.js").write_text(
+                "\n".join(
+                    [
+                        "const PROXY_TARGET_ADDRESS = 'https://pftest.senguo.me'",
+                        "const WS_PROXY_TARGET_ADDRESS = 'wss://pftest.senguo.me'",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            summary = lib._patch_frontend_local_backend_proxy_js(
+                {
+                    "local_backend_proxy_js_file": "src/setupProxy.js",
+                    "local_backend_repo_key": "pf-backend",
+                    "backend_task_env_file": "docker/.task.env",
+                    "local_backend_proxy_host": "localhost",
+                    "local_backend_proxy_js_http_constants": ["PROXY_TARGET_ADDRESS"],
+                    "local_backend_proxy_js_ws_constants": ["WS_PROXY_TARGET_ADDRESS"],
+                },
+                frontend_repo,
+                dry_run=False,
+            )
+
+            updated = (frontend_repo / "src/setupProxy.js").read_text(encoding="utf-8")
+            self.assertIn("const PROXY_TARGET_ADDRESS = 'http://localhost:19097'", updated)
+            self.assertIn("const WS_PROXY_TARGET_ADDRESS = 'ws://localhost:19097'", updated)
+            self.assertEqual(summary["generated_files"], ["src/setupProxy.js"])
+
+    def test_patch_frontend_local_backend_json_updates_wholesale_pc_proxy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            task_root = Path(tmpdir) / "2026-06-04-demo-task"
+            backend_repo = task_root / "pf-backend__demo-task"
+            frontend_repo = task_root / "senguo-pf-manage-frontend__demo-task"
+            backend_repo.mkdir(parents=True)
+            (frontend_repo / "dev_config").mkdir(parents=True)
+
+            (backend_repo / "docker").mkdir()
+            (backend_repo / "docker/.task.env").write_text(
+                "COMPOSE_PROJECT_NAME=20260604-demo-pf-backend\nTASK_APP_HOST_PORT=19098\n",
+                encoding="utf-8",
+            )
+            (frontend_repo / "dev_config/settings.json").write_text(
+                "\n".join(
+                    [
+                        "{",
+                        '\t"SERVER_HOST": "pfzone.senguo.me",',
+                        '\t"DEV_PORT": 3030,',
+                        '\t"PROXY_TARGET_ADDRESS": "https://pftest.senguo.me"',
+                        "}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            summary = lib._patch_frontend_local_backend_json(
+                {
+                    "local_backend_json_file": "dev_config/settings.json",
+                    "local_backend_json_fields": ["PROXY_TARGET_ADDRESS"],
+                    "local_backend_repo_key": "pf-backend",
+                    "backend_task_env_file": "docker/.task.env",
+                    "local_backend_proxy_host": "localhost",
+                },
+                frontend_repo,
+                dry_run=False,
+            )
+
+            updated = (frontend_repo / "dev_config/settings.json").read_text(encoding="utf-8")
+            self.assertIn('"PROXY_TARGET_ADDRESS": "http://localhost:19098"', updated)
+            self.assertEqual(summary["generated_files"], ["dev_config/settings.json"])
 
 
 class StopTaskRuntimeTests(unittest.TestCase):
@@ -277,10 +567,10 @@ class StopTaskRuntimeTests(unittest.TestCase):
 
 class PublishTargetTests(unittest.TestCase):
     def test_resolve_publish_target_kind_supports_human_targets(self) -> None:
-        self.assertEqual(lib.resolve_publish_target_kind("产地后端"), "backend")
+        self.assertEqual(lib.resolve_publish_target_kind("后端"), "backend")
         self.assertEqual(lib.resolve_publish_target_kind("前端"), "frontend")
-        self.assertEqual(lib.resolve_publish_target_kind("产地手机前端"), "mobile_frontend")
-        self.assertEqual(lib.resolve_publish_target_kind("产地PC前端"), "pc_frontend")
+        self.assertEqual(lib.resolve_publish_target_kind("手机前端"), "mobile_frontend")
+        self.assertEqual(lib.resolve_publish_target_kind("PC前端"), "pc_frontend")
 
     def test_classify_repo_publish_kind_uses_runtime_and_notes(self) -> None:
         self.assertEqual(
@@ -396,6 +686,189 @@ class PublishTargetTests(unittest.TestCase):
             lib.resolve_requested_repo_keys([], bound_repo_keys, repo_cfg_by_key),
             ["custom-backend", "custom-mobile"],
         )
+
+    def test_resolve_requested_repo_keys_prefers_repo_alias_before_generic_kind(self) -> None:
+        repo_cfg_by_key = {
+            "producer-backend": {
+                "key": "producer-backend",
+                "aliases": ["产地后端", "产地通后端"],
+                "notes": "产地通后端",
+                "runtime": {"mode": "shared-backend-app"},
+            },
+            "pf-backend": {
+                "key": "pf-backend",
+                "aliases": ["批发后端"],
+                "notes": "批发后端",
+            },
+            "pf-mproducer-supplier": {
+                "key": "pf-mproducer-supplier",
+                "aliases": ["产地手机前端"],
+                "notes": "产地通手机前端",
+                "runtime": {"mode": "patch-node-frontend-environment"},
+            },
+            "senguo-pf-easy-mobile": {
+                "key": "senguo-pf-easy-mobile",
+                "aliases": ["批发手机前端"],
+                "notes": "批发手机前端",
+                "runtime": {"mode": "patch-node-frontend-environment"},
+            },
+            "pf-producer-supplier": {
+                "key": "pf-producer-supplier",
+                "aliases": ["产地PC前端"],
+                "notes": "产地通 PC 前端",
+                "runtime": {"mode": "patch-node-frontend-environment"},
+            },
+            "senguo-pf-manage-frontend": {
+                "key": "senguo-pf-manage-frontend",
+                "aliases": ["批发PC前端"],
+                "notes": "批发 PC 前端",
+                "runtime": {"mode": "patch-node-frontend-environment"},
+            },
+        }
+        bound_repo_keys = list(repo_cfg_by_key)
+
+        self.assertEqual(
+            lib.resolve_requested_repo_keys(["批发后端", "批发手机前端", "批发PC前端"], bound_repo_keys, repo_cfg_by_key),
+            ["pf-backend", "senguo-pf-easy-mobile", "senguo-pf-manage-frontend"],
+        )
+        self.assertEqual(
+            lib.resolve_requested_repo_keys(["产地后端", "产地手机前端", "产地PC前端"], bound_repo_keys, repo_cfg_by_key),
+            ["producer-backend", "pf-mproducer-supplier", "pf-producer-supplier"],
+        )
+
+    def test_resolve_requested_repo_keys_keeps_generic_target_ambiguous_when_multiple_match(self) -> None:
+        repo_cfg_by_key = {
+            "pf-mproducer-supplier": {
+                "key": "pf-mproducer-supplier",
+                "aliases": ["产地手机前端"],
+                "notes": "产地通手机前端",
+                "runtime": {"mode": "patch-node-frontend-environment"},
+            },
+            "senguo-pf-easy-mobile": {
+                "key": "senguo-pf-easy-mobile",
+                "aliases": ["批发手机前端"],
+                "notes": "批发手机前端",
+                "runtime": {"mode": "patch-node-frontend-environment"},
+            },
+        }
+        bound_repo_keys = list(repo_cfg_by_key)
+
+        with self.assertRaisesRegex(ValueError, "multiple bound repos match publish target kind mobile_frontend"):
+            lib.resolve_requested_repo_keys(["手机前端"], bound_repo_keys, repo_cfg_by_key)
+
+    def test_resolve_requested_repo_keys_or_aliases_supports_repo_alias(self) -> None:
+        repo_cfg_by_key = {
+            "senguo-pf-easy-mobile": {
+                "key": "senguo-pf-easy-mobile",
+                "aliases": ["批发手机前端"],
+                "notes": "批发手机前端",
+                "runtime": {"mode": "patch-node-frontend-environment"},
+            },
+        }
+        bound_repo_keys = ["senguo-pf-easy-mobile"]
+
+        self.assertEqual(
+            lib.resolve_requested_repo_keys_or_aliases(["批发手机前端"], bound_repo_keys, repo_cfg_by_key),
+            ["senguo-pf-easy-mobile"],
+        )
+
+    def test_publish_main_defaults_to_all_bound_repos_when_no_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir) / "workspace"
+            docs_root = workspace_root / "_docs"
+            tasks_root = workspace_root / "_tasks"
+            config_root = workspace_root / "config"
+            task_id = "2026-06-03-部门转货"
+            task_docs_root = docs_root / task_id
+            task_code_root = tasks_root / task_id
+            backend_repo = task_code_root / "producer-backend__部门转货"
+            mobile_repo = task_code_root / "pf-mproducer-supplier__部门转货"
+            task_docs_root.mkdir(parents=True)
+            backend_repo.mkdir(parents=True)
+            mobile_repo.mkdir(parents=True)
+            config_root.mkdir(parents=True)
+
+            (config_root / "workspace.yaml").write_text(
+                "\n".join(
+                    [
+                        f'workspace_root: "{workspace_root}"',
+                        f'tasks_root: "{tasks_root}"',
+                        f'docs_root: "{docs_root}"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (config_root / "repositories.yaml").write_text(
+                "\n".join(
+                    [
+                        "repositories:",
+                        "- key: producer-backend",
+                        "  notes: 产地通后端",
+                        "  runtime:",
+                        "    mode: shared-backend-app",
+                        "- key: pf-mproducer-supplier",
+                        "  notes: 产地通手机前端",
+                        "  runtime:",
+                        "    mode: patch-node-frontend-environment",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (task_docs_root / "meta.yaml").write_text(
+                "\n".join(
+                    [
+                        f"task_id: {task_id}",
+                        "status: 测试中",
+                        "resume_status: 测试中",
+                        "coding_allowed: true",
+                        "repos:",
+                        "- key: producer-backend",
+                        "  repo_dir: producer-backend__部门转货",
+                        "  branch: 部门转货",
+                        "- key: pf-mproducer-supplier",
+                        "  repo_dir: pf-mproducer-supplier__部门转货",
+                        "  branch: 部门转货",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            for repo_path in [backend_repo, mobile_repo]:
+                subprocess.run(["git", "-C", str(repo_path), "init"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(
+                    ["git", "-C", str(repo_path), "checkout", "-b", "部门转货"],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+
+            def fake_publish(job: dict[str, object]) -> dict[str, object]:
+                return {
+                    "repo_key": job["repo_key"],
+                    "repo_path": str(job["repo_path"]),
+                    "returncode": 0,
+                    "stdout": "发布成功\n",
+                    "stderr": "",
+                    "status": "success",
+                    "error_message": None,
+                }
+
+            with (
+                mock.patch.object(publish_script, "run_publish_job", side_effect=fake_publish) as run_publish,
+                mock.patch("sys.argv", [
+                    "publish_task_workspace.py",
+                    task_id,
+                    "--config-root",
+                    str(config_root),
+                ]),
+            ):
+                self.assertEqual(publish_script.main(), 0)
+
+            published_repo_keys = {call.args[0]["repo_key"] for call in run_publish.call_args_list}
+            self.assertEqual(published_repo_keys, {"producer-backend", "pf-mproducer-supplier"})
 
     def test_resolve_requested_repo_keys_drops_redundant_frontend_target(self) -> None:
         repo_cfg_by_key = {
@@ -544,6 +1017,49 @@ class PublishTargetTests(unittest.TestCase):
         self.assertEqual(result["status"], "conflict")
         self.assertIn("branch develop", result["error_message"])
         self.assertEqual(result["repo_state"]["unmerged_files"], ["src/demo.ts"])
+
+    def test_run_publish_job_restores_recorded_branch_after_develop_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            subprocess.run(["git", "-C", str(repo_path), "init"], check=True, capture_output=True, text=True)
+            subprocess.run(
+                ["git", "-C", str(repo_path), "config", "user.email", "test@example.com"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo_path), "config", "user.name", "Test User"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            (repo_path / "demo.txt").write_text("base\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo_path), "add", "demo.txt"], check=True, capture_output=True, text=True)
+            subprocess.run(
+                ["git", "-C", str(repo_path), "commit", "-m", "init"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(["git", "-C", str(repo_path), "checkout", "-b", "task-demo"], check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(repo_path), "checkout", "-b", "develop"], check=True, capture_output=True, text=True)
+
+            result = publish_script.run_publish_job(
+                {
+                    "repo_key": "demo-repo",
+                    "repo_path": repo_path,
+                    "command": ["python3", "-c", "print('published')"],
+                    "recorded_branch": "task-demo",
+                    "started_branch": "develop",
+                    "restore_branch_after_success": True,
+                }
+            )
+
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["restore_result"]["ok"])
+        self.assertEqual(result["restore_result"]["target_branch"], "task-demo")
+        self.assertEqual(result["restore_result"]["branch"], "task-demo")
 
     def test_run_publish_job_requires_explicit_success_signal_for_local_publish(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -818,6 +1334,266 @@ class NextTaskWorkspaceTests(unittest.TestCase):
         self.assertIn("当前有效方案、核心决策原因和上线口径写到 `plan.md`", text)
         self.assertNotIn("## 关键取舍", text)
 
+    def test_create_task_workspace_accepts_repo_alias_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir) / "workspace"
+            docs_root = workspace_root / "_docs"
+            tasks_root = workspace_root / "_tasks"
+            config_root = workspace_root / "config"
+            config_root.mkdir(parents=True)
+
+            (config_root / "workspace.yaml").write_text(
+                "\n".join(
+                    [
+                        f'workspace_root: "{workspace_root}"',
+                        f'tasks_root: "{tasks_root}"',
+                        f'docs_root: "{docs_root}"',
+                        "documents:",
+                        '  index: "index.md"',
+                        '  plan: "plan.md"',
+                        '  progress: "progress.md"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (config_root / "repositories.yaml").write_text(
+                "\n".join(
+                    [
+                        "repositories:",
+                        "- key: producer-backend",
+                        '  remote: "git@example.com:producer-backend.git"',
+                        '  notes: "产地通后端"',
+                        "  aliases:",
+                        '    - "产地后端"',
+                        "  runtime:",
+                        '    mode: "shared-backend-app"',
+                        "- key: pf-backend",
+                        '  remote: "git@example.com:pf-backend.git"',
+                        '  notes: "批发后端"',
+                        "  aliases:",
+                        '    - "批发后端"',
+                        "- key: senguo-pf-easy-mobile",
+                        '  remote: "git@example.com:senguo-pf-easy-mobile.git"',
+                        '  notes: "批发手机前端"',
+                        "  aliases:",
+                        '    - "批发手机前端"',
+                        "  runtime:",
+                        '    mode: "patch-node-frontend-environment"',
+                        "- key: senguo-pf-manage-frontend",
+                        '  remote: "git@example.com:senguo-pf-manage-frontend.git"',
+                        '  notes: "批发 PC 前端"',
+                        "  aliases:",
+                        '    - "批发PC前端"',
+                        "  runtime:",
+                        '    mode: "patch-node-frontend-environment"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch.object(create_script, "ensure_repo_clone"),
+                mock.patch.object(create_script, "prepare_repo_from_default"),
+                mock.patch.object(
+                    create_script,
+                    "prepare_repo_runtime",
+                    return_value={
+                        "copied_from_main": [],
+                        "copied_from_template": [],
+                        "generated_files": [],
+                        "install_commands": [],
+                        "start_commands": [],
+                        "notes": [],
+                        "warnings": [],
+                    },
+                ),
+                mock.patch.object(
+                    create_script,
+                    "start_repo_runtime",
+                    return_value={"executed": [], "warnings": []},
+                ),
+                mock.patch("sys.argv", [
+                    "create_task_workspace.py",
+                    "批发任务",
+                    "--repo",
+                    "批发后端",
+                    "--repo",
+                    "批发手机前端",
+                    "--repo",
+                    "批发PC前端",
+                    "--config-root",
+                    str(config_root),
+                    "--date",
+                    "2026-07-14",
+                ]),
+            ):
+                self.assertEqual(create_script.main(), 0)
+
+            task_docs_root = docs_root / "2026-07-14-批发任务"
+            meta = lib.load_yaml(task_docs_root / "meta.yaml")
+            repo_keys = [repo["key"] for repo in meta["repos"]]
+            self.assertEqual(repo_keys, ["pf-backend", "senguo-pf-easy-mobile", "senguo-pf-manage-frontend"])
+            self.assertIn("涉及仓库：pf-backend, senguo-pf-easy-mobile, senguo-pf-manage-frontend", (task_docs_root / "plan.md").read_text(encoding="utf-8"))
+
+    def test_create_task_workspace_dry_run_does_not_leave_empty_task_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir) / "workspace"
+            docs_root = workspace_root / "_docs"
+            tasks_root = workspace_root / "_tasks"
+            config_root = workspace_root / "config"
+            source_repo = Path(tmpdir) / "senguo-pf-easy-mobile"
+            config_root.mkdir(parents=True)
+            source_repo.mkdir()
+            (source_repo / "package.json").write_text(
+                '{"name":"wholesale-mobile","scripts":{"start":"vite --host 0.0.0.0"},"volta":{"node":"18.17.0"}}',
+                encoding="utf-8",
+            )
+
+            (config_root / "workspace.yaml").write_text(
+                "\n".join(
+                    [
+                        f'workspace_root: "{workspace_root}"',
+                        f'tasks_root: "{tasks_root}"',
+                        f'docs_root: "{docs_root}"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (config_root / "repositories.yaml").write_text(
+                "\n".join(
+                    [
+                        "repositories:",
+                        "- key: senguo-pf-easy-mobile",
+                        f'  path: "{source_repo}"',
+                        '  remote: "git@example.com:senguo-pf-easy-mobile.git"',
+                        '  notes: "批发手机前端"',
+                        "  aliases:",
+                        '    - "批发手机前端"',
+                        "  runtime:",
+                        '    mode: "patch-node-frontend-environment"',
+                        '    task_env_file: ".codex/task-runtime.env"',
+                        '    task_port_key: "TASK_WEB_PORT"',
+                        "    app_port_start: 3209",
+                        "    app_port_end: 3249",
+                        '    environment_toml: ".codex/environments/environment.toml"',
+                        "    install_commands:",
+                        '      - "npm install"',
+                        "    start_commands:",
+                        '      - "npm run start"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch("sys.argv", [
+                "create_task_workspace.py",
+                "批发 dry run",
+                "--repo",
+                "批发手机前端",
+                "--config-root",
+                str(config_root),
+                "--date",
+                "2026-07-14",
+                "--dry-run",
+            ]):
+                self.assertEqual(create_script.main(), 0)
+
+            self.assertFalse((tasks_root / "2026-07-14-批发 dry run").exists())
+            self.assertFalse((docs_root / "2026-07-14-批发 dry run").exists())
+
+    def test_prepare_task_runtime_accepts_repo_alias_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir) / "workspace"
+            docs_root = workspace_root / "_docs"
+            tasks_root = workspace_root / "_tasks"
+            config_root = workspace_root / "config"
+            task_id = "2026-07-14-批发任务"
+            task_docs_root = docs_root / task_id
+            task_code_root = tasks_root / task_id
+            repo_path = task_code_root / "senguo-pf-easy-mobile__批发任务"
+            task_docs_root.mkdir(parents=True)
+            repo_path.mkdir(parents=True)
+            config_root.mkdir(parents=True)
+
+            (config_root / "workspace.yaml").write_text(
+                "\n".join(
+                    [
+                        f'workspace_root: "{workspace_root}"',
+                        f'tasks_root: "{tasks_root}"',
+                        f'docs_root: "{docs_root}"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (config_root / "repositories.yaml").write_text(
+                "\n".join(
+                    [
+                        "repositories:",
+                        "- key: senguo-pf-easy-mobile",
+                        '  notes: "批发手机前端"',
+                        "  aliases:",
+                        '    - "批发手机前端"',
+                        "  runtime:",
+                        '    mode: "patch-node-frontend-environment"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (task_docs_root / "meta.yaml").write_text(
+                "\n".join(
+                    [
+                        f"task_id: {task_id}",
+                        "status: 开发中",
+                        "repos:",
+                        "- key: senguo-pf-easy-mobile",
+                        "  repo_dir: senguo-pf-easy-mobile__批发任务",
+                        "  branch: 批发任务",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch.object(
+                    prepare_runtime_script,
+                    "prepare_repo_runtime",
+                    return_value={
+                        "copied_from_main": [],
+                        "copied_from_template": [],
+                        "generated_files": [],
+                        "install_commands": [],
+                        "start_commands": [],
+                        "notes": [],
+                        "warnings": [],
+                    },
+                ) as prepare_mock,
+                mock.patch.object(
+                    prepare_runtime_script,
+                    "start_repo_runtime",
+                    return_value={"executed": [], "warnings": []},
+                ),
+                mock.patch("sys.argv", [
+                    "prepare_task_runtime.py",
+                    task_id,
+                    "--repo",
+                    "批发手机前端",
+                    "--config-root",
+                    str(config_root),
+                ]),
+            ):
+                self.assertEqual(prepare_runtime_script.main(), 0)
+
+            prepare_mock.assert_called_once()
+            self.assertEqual(prepare_mock.call_args.args[0]["key"], "senguo-pf-easy-mobile")
+            self.assertEqual(prepare_mock.call_args.args[1], repo_path)
+
     def test_next_task_workspace_resets_current_stage_and_creates_new_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace_root = Path(tmpdir) / "workspace"
@@ -852,8 +1628,8 @@ class NextTaskWorkspaceTests(unittest.TestCase):
                 "\n".join(
                     [
                         f"task_id: {task_id}",
-                        "status: 已完成",
-                        "resume_status: 已完成",
+                        "status: 测试中",
+                        "resume_status: 测试中",
                         "coding_allowed: false",
                         "repos:",
                         "- key: producer-backend",
@@ -921,6 +1697,7 @@ class NextTaskWorkspaceTests(unittest.TestCase):
             self.assertNotIn("active_decision_log", meta)
             self.assertEqual(meta["repos"][0]["branch"], "加工单扫码支持托盘码二期")
             self.assertEqual(meta["previous_phases"][0]["plan"], "plan.md")
+            self.assertEqual(meta["previous_phases"][0]["status"], "已完成")
             self.assertEqual(meta["previous_phases"][0]["decision_log"], "decision-log.md")
 
             new_plan_path = task_docs_root / "plan-加工单扫码支持托盘码二期.md"
@@ -1271,7 +2048,7 @@ class NextTaskWorkspaceTests(unittest.TestCase):
                 commands,
             )
 
-    def test_next_task_workspace_requires_completed_status(self) -> None:
+    def test_next_task_workspace_rejects_planning_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace_root = Path(tmpdir) / "workspace"
             docs_root = workspace_root / "_docs"
@@ -1299,9 +2076,9 @@ class NextTaskWorkspaceTests(unittest.TestCase):
                 "\n".join(
                     [
                         f"task_id: {task_id}",
-                        "status: 开发中",
-                        "resume_status: 开发中",
-                        "coding_allowed: true",
+                        "status: 方案中",
+                        "resume_status: 方案中",
+                        "coding_allowed: false",
                         "repos: []",
                         "",
                     ]
@@ -1316,7 +2093,7 @@ class NextTaskWorkspaceTests(unittest.TestCase):
                 "--config-root",
                 str(config_root),
             ]):
-                with self.assertRaisesRegex(ValueError, "next requires task status in \\[已完成\\]"):
+                with self.assertRaisesRegex(ValueError, "next requires task status in \\[开发中, 测试中, 已完成\\]"):
                     next_script.main()
 
 
