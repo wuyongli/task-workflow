@@ -1,6 +1,6 @@
 ---
 name: task-workflow
-description: "Use when the user works with /Users/wuyongli/Documents/sg-project/_workspace task workspaces: create/load/continue tasks, update progress, review/codeview changes, consolidate tests, publish, sync remote master, switch local MySQL data directory, inspect task dev URLs or ports, open next-stage work, complete, or clean up."
+description: "Use when the user works with /Users/wuyongli/Documents/sg-project/_workspace task workspaces: create/load/continue tasks, update progress, review/codeview changes, consolidate tests, publish, sync remote master, delete local develop branches, switch local MySQL data directory, inspect task dev URLs or ports, open next-stage work, complete, or clean up."
 ---
 
 # 任务工作流
@@ -18,7 +18,7 @@ description: "Use when the user works with /Users/wuyongli/Documents/sg-project/
 
 文档分层：
 - `meta.yaml`：机器事实，只记录状态、分支、当前阶段、当前主计划等可恢复信息
-- `index.md`：人读快照，只保留当前状态、当前结论、当前阻塞、下一步和导航
+- `index.md`：人读任务摘要，只保留当前状态、当前主线、当前阻塞、下一步和当前入口
 - `plan.md`：当前有效方案，只保留已经成立的方案结论、核心决策原因、开发方案、数据变更和上线方案
 - `progress.md`：执行记录，只记录实际做了什么、验证了什么、发布了什么、阻塞和下一步
 - `decision-log.md`：方案讨论过程容器；用于承接候选方案、取舍推演、被否方案、口径变化原因等不适合长期塞进 `plan.md` 的讨论细节
@@ -30,7 +30,7 @@ description: "Use when the user works with /Users/wuyongli/Documents/sg-project/
 - 实际推进到了哪一步，写入 `progress.md`
 - 方案讨论过程、候选路径和取舍推演，写入 `decision-log.md`
 - 当前稳定结论和核心决策原因，提炼回 `plan.md`
-- 当前状态和下一步入口摘要，写入 `index.md`
+- 当前状态、当前主线和下一步入口摘要，写入 `index.md`
 - 脚本和 AI 恢复上下文所需的机器事实，写入 `meta.yaml`
 - 任务过程中产生的不确定材料，先按文件形态放入 `assets/`，不要为了内容不确定而新建零散 markdown
 
@@ -146,6 +146,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_ru
 
 更新原则：
 - `index.md` 只保留当前快照
+- `index.md` 不承载方案摘要，超过一屏时应先瘦身
 - `plan.md` 只保留当前有效方案、核心决策原因和执行依据
 - `progress.md` 只记录实际进展、验证结果、发布记录、阻塞与变更历史
 - `decision-log.md` 承接方案讨论过程；简单任务可不创建，复杂方案讨论应主动创建或更新
@@ -204,7 +205,34 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_ru
 - 有未提交本地改动的仓库不继续同步，只展示 `git status --short`
 - 同步冲突、工作区异常、分支异常或 git 报错时，只反馈事实，不自动修代码、不自动解冲突
 
-### 7. MySQL
+### 7. Clean Develop
+
+用于发布前清理当前任务仓库里的本地 `develop` 分支，避免后续 `sg publish` 合入远程 `develop` 前误用落后的本地分支。
+
+显式命令：
+
+```text
+/task-workflow clean-develop [目标1] [目标2] [...]
+```
+
+执行前必须读取 [publish-sync.md](references/publish-sync.md)。
+
+关键边界：
+- 只删除本地 `develop` 分支，不删除、不推送、不改动远程 `origin/develop`
+- 默认不指定目标时，处理当前任务下全部绑定仓库
+- 指定目标时，目标表达方式与 publish / sync 相同
+- 多仓库默认并行处理
+- 某个仓库没有本地 `develop` 分支时视为 no-op，不影响整体结果
+- 如果某个仓库当前正停在 `develop`，不删除该仓库的分支，输出当前状态并停止该仓库
+
+推荐命令：
+
+```bash
+python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/clean_develop_task_workspace.py "YYYY-MM-DD-原始任务名"
+python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/clean_develop_task_workspace.py "YYYY-MM-DD-原始任务名" 后端 手机前端
+```
+
+### 8. MySQL
 
 用于在产地后端和批发后端本地开发之间，显式切换共享 MySQL 容器的数据目录。
 
@@ -229,7 +257,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_mys
 - 当前数据目录不匹配时，只重建 MySQL 容器，输出切换前后目录
 - 切换会让正在连接 MySQL 的任务 app 短暂断开，必要时重启对应后端 app
 
-### 8. Review
+### 9. Review
 
 用于任务开发完成或准备上线前，对当前任务改动做代码审查、项目规则审查、对抗式审查，并收敛测试代码。
 
@@ -282,7 +310,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_mys
 
 适用于 `producer-backend` 任务工作区。优先在当前任务自己的后端仓库根目录运行测试；宿主机依赖不完整时切换到当前任务 Docker app 容器，不要误用共享主仓容器。详细命令见 [runtime.md](references/runtime.md)。
 
-### 9. Complete
+### 10. Complete
 
 用于编码和自测完成后标记任务完成。
 
@@ -301,7 +329,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_mys
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/complete_task_workspace.py "YYYY-MM-DD-原始任务名"
 ```
 
-### 10. Next
+### 11. Next
 
 用于在同一个任务工作空间内开启下一阶段任务，例如一期上线后继续做二期。
 
@@ -331,7 +359,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_works
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_workspace.py "YYYY-MM-DD-原始任务名" "新任务名" --repo 手机前端
 ```
 
-### 11. Cleanup
+### 12. Cleanup
 
 用于任务已完成，并且需要清理任务代码目录的时候。
 
@@ -350,7 +378,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_works
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/cleanup_task_workspace.py "YYYY-MM-DD-原始任务名"
 ```
 
-### 12. Status
+### 13. Status
 
 用于用户想快速查看任务状态和任务仓库路径。
 
@@ -366,7 +394,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/cleanup_task_wo
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/status_task_workspace.py
 ```
 
-### 13. Portal
+### 14. Portal
 
 用于在浏览器里快速查看当前开发中任务对应的手机端、PC 端和后端端口，不再手工记忆任务与端口的映射关系。
 
@@ -403,6 +431,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/serve_task_dev_
 - 当需要更新任务文档、拆分方案、处理 `meta.yaml` 或判断文档职责时，读取 [docs-model.md](references/docs-model.md)
 - 当用户表达分阶段、一二期、开启下一阶段或拆产品子任务时，读取 [stages.md](references/stages.md)
 - 当需要发布或同步远程主线时，读取 [publish-sync.md](references/publish-sync.md)
+- 当需要清理任务仓库的本地 `develop` 分支时，使用 `clean_develop_task_workspace.py`，不要操作远程 `origin/develop`
 - 当需要准备 runtime、解释 `repositories.yaml` / `workspace.yaml` 字段、处理后端测试环境时，读取 [runtime.md](references/runtime.md)
 - 当需要切换本地共享 MySQL 数据目录时，使用 `switch_task_mysql.py`，不要把切库动作混入普通后端启动
 
@@ -418,6 +447,12 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/serve_task_dev_
 
 当用户要求同步远程主线时，回复应聚焦于：
 - 按 [publish-sync.md](references/publish-sync.md) 输出任务、目标、仓库、同步动作、成功结果、失败错误或冲突信息
+
+当用户要求删除本地 `develop` 分支时，回复应聚焦于：
+- 当前识别到的任务和目标仓库
+- 哪些仓库已删除本地 `develop`
+- 哪些仓库本来就没有本地 `develop`
+- 哪些仓库因为当前正在 `develop` 或 git 错误而失败
 
 当用户要求切换本地 MySQL 时，回复应聚焦于：
 - 目标后端、当前数据目录、目标数据目录

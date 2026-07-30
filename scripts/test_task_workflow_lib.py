@@ -22,6 +22,7 @@ import prepare_task_runtime as prepare_runtime_script
 import next_task_workspace as next_script
 import complete_task_workspace as complete_script
 import cleanup_task_workspace as cleanup_script
+import clean_develop_task_workspace as clean_develop_script
 
 
 class PortAvailabilityTests(unittest.TestCase):
@@ -1257,6 +1258,153 @@ class SyncTaskTests(unittest.TestCase):
         self.assertEqual(run_git_command.call_count, 2)
 
 
+class CleanDevelopTaskTests(unittest.TestCase):
+    def test_run_clean_develop_job_deletes_only_local_develop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir) / "repo"
+            repo_path.mkdir()
+            subprocess.run(["git", "-C", str(repo_path), "init"], check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(repo_path), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo_path), "config", "user.name", "Test User"], check=True)
+            (repo_path / "demo.txt").write_text("base\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo_path), "add", "demo.txt"], check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(repo_path), "commit", "-m", "init"], check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(repo_path), "checkout", "-b", "develop"], check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(repo_path), "checkout", "-b", "feature-task"], check=True, capture_output=True, text=True)
+
+            result = clean_develop_script.run_clean_develop_job(
+                {
+                    "repo_key": "demo-repo",
+                    "repo_path": repo_path,
+                }
+            )
+            branches = subprocess.run(
+                ["git", "-C", str(repo_path), "branch", "--list", "--format=%(refname:short)"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.splitlines()
+
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("develop", {branch.strip() for branch in branches})
+
+    def test_run_clean_develop_job_noops_when_local_develop_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir) / "repo"
+            repo_path.mkdir()
+            subprocess.run(["git", "-C", str(repo_path), "init"], check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(repo_path), "checkout", "-b", "feature-task"], check=True, capture_output=True, text=True)
+
+            result = clean_develop_script.run_clean_develop_job(
+                {
+                    "repo_key": "demo-repo",
+                    "repo_path": repo_path,
+                }
+            )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertIn("does not exist", result["reason"])
+
+    def test_run_clean_develop_job_refuses_current_develop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir) / "repo"
+            repo_path.mkdir()
+            subprocess.run(["git", "-C", str(repo_path), "init"], check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(repo_path), "checkout", "-b", "develop"], check=True, capture_output=True, text=True)
+
+            result = clean_develop_script.run_clean_develop_job(
+                {
+                    "repo_key": "demo-repo",
+                    "repo_path": repo_path,
+                }
+            )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("current branch is local develop", result["reason"])
+
+    def test_clean_develop_main_defaults_to_all_bound_repos(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir) / "workspace"
+            docs_root = workspace_root / "_docs"
+            tasks_root = workspace_root / "_tasks"
+            config_root = workspace_root / "config"
+            task_id = "2026-06-03-部门转货"
+            task_docs_root = docs_root / task_id
+            backend_repo = tasks_root / task_id / "producer-backend__部门转货"
+            mobile_repo = tasks_root / task_id / "pf-mproducer-supplier__部门转货"
+            task_docs_root.mkdir(parents=True)
+            backend_repo.mkdir(parents=True)
+            mobile_repo.mkdir(parents=True)
+            config_root.mkdir(parents=True)
+
+            (config_root / "workspace.yaml").write_text(
+                "\n".join(
+                    [
+                        f'workspace_root: "{workspace_root}"',
+                        f'tasks_root: "{tasks_root}"',
+                        f'docs_root: "{docs_root}"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (config_root / "repositories.yaml").write_text(
+                "\n".join(
+                    [
+                        "repositories:",
+                        "- key: producer-backend",
+                        "  notes: 产地通后端",
+                        "- key: pf-mproducer-supplier",
+                        "  notes: 产地通手机前端",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (task_docs_root / "meta.yaml").write_text(
+                "\n".join(
+                    [
+                        f"task_id: {task_id}",
+                        "status: 测试中",
+                        "resume_status: 测试中",
+                        "coding_allowed: true",
+                        "repos:",
+                        "- key: producer-backend",
+                        "  repo_dir: producer-backend__部门转货",
+                        "  branch: 部门转货",
+                        "- key: pf-mproducer-supplier",
+                        "  repo_dir: pf-mproducer-supplier__部门转货",
+                        "  branch: 部门转货",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            def fake_clean(job: dict[str, object]) -> dict[str, object]:
+                return {
+                    "repo_key": job["repo_key"],
+                    "status": "skipped",
+                    "reason": "local develop branch does not exist",
+                    "stdout": "",
+                    "stderr": "",
+                }
+
+            with (
+                mock.patch.object(clean_develop_script, "run_clean_develop_job", side_effect=fake_clean) as run_clean,
+                mock.patch("sys.argv", [
+                    "clean_develop_task_workspace.py",
+                    task_id,
+                    "--config-root",
+                    str(config_root),
+                ]),
+            ):
+                self.assertEqual(clean_develop_script.main(), 0)
+
+            cleaned_repo_keys = {call.args[0]["repo_key"] for call in run_clean.call_args_list}
+            self.assertEqual(cleaned_repo_keys, {"producer-backend", "pf-mproducer-supplier"})
+
+
 class TaskPortalTests(unittest.TestCase):
     def test_build_frontend_url_uses_pfzone_host(self) -> None:
         self.assertEqual(
@@ -1308,6 +1456,16 @@ class TaskPortalTests(unittest.TestCase):
 
 
 class NextTaskWorkspaceTests(unittest.TestCase):
+    def test_create_task_render_index_is_task_summary(self) -> None:
+        text = create_script.render_index("拍照水印")
+
+        self.assertIn("## 任务摘要", text)
+        self.assertIn("- 当前主线：", text)
+        self.assertIn("## 当前入口", text)
+        self.assertNotIn("## 任务卡片", text)
+        self.assertNotIn("当前结论", text)
+        self.assertNotIn("使用原则", text)
+
     def test_create_task_render_plan_is_seed_version(self) -> None:
         text = create_script.render_plan("拍照水印", ["pf-mproducer-supplier"])
 
@@ -1712,8 +1870,8 @@ class NextTaskWorkspaceTests(unittest.TestCase):
             self.assertIn("- 当前状态：方案中", index_text)
             self.assertIn("- 当前阶段任务：加工单扫码支持托盘码二期", index_text)
             self.assertIn("- 前置阶段任务：部门转货", index_text)
-            self.assertIn("- 当前阶段计划：./plan-加工单扫码支持托盘码二期.md", index_text)
-            self.assertIn("- 历史阶段计划：./plan.md", index_text)
+            self.assertIn("- 当前方案：./plan-加工单扫码支持托盘码二期.md", index_text)
+            self.assertIn("- 历史阶段：./plan.md", index_text)
 
             progress_text = (task_docs_root / "progress.md").read_text(encoding="utf-8")
             self.assertIn("下一阶段开启", progress_text)

@@ -2,7 +2,7 @@
 
 ## 目标识别
 
-`publish` / `sync` 共用目标识别规则：
+`publish` / `sync` / `clean-develop` 共用目标识别规则：
 - 默认从当前任务上下文识别当前要操作的任务，不额外要求用户重复提供 task 标识
 - 如果当前上下文无法唯一识别任务，才向用户补充确认
 - 目标表达的核心是“目标分类”，不是固定仓库名；执行时需要在当前任务绑定仓库里动态匹配对应的后端、手机前端、PC 前端仓库
@@ -68,6 +68,32 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/sync_task_works
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/sync_task_workspace.py "YYYY-MM-DD-原始任务名" 后端 手机前端
 ```
 
+## Clean Develop
+
+用于发布前删除任务仓库里的本地 `develop` 分支，避免后续 `sg publish` 合入远程 `develop` 前受到落后的本地 `develop` 影响。
+
+显式命令：
+
+```text
+/task-workflow clean-develop [目标1] [目标2] [...]
+```
+
+规则：
+- 只删除本地 `develop` 分支，不删除、不推送、不改动远程 `origin/develop`
+- 默认不指定目标时，处理当前任务下全部绑定仓库
+- 指定目标时，继续使用和 publish / sync 一样的自然语言目标识别方式
+- 多仓库默认并行执行，不强调顺序
+- 某个仓库没有本地 `develop` 分支时，视为 no-op，不影响其它仓库
+- 如果某个仓库当前分支就是 `develop`，不删除该仓库的本地 `develop`；先输出当前分支状态，等待用户或 AI 切走后再重试
+- 删除失败时，只展示失败仓库和 git 错误信息，不自动切分支、不自动修复工作区
+
+推荐命令：
+
+```bash
+python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/clean_develop_task_workspace.py "YYYY-MM-DD-原始任务名"
+python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/clean_develop_task_workspace.py "YYYY-MM-DD-原始任务名" 后端 手机前端
+```
+
 ## 输出要求
 
 发布时聚焦：
@@ -83,3 +109,10 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/sync_task_works
 - 将同步哪些仓库
 - 每个仓库的当前分支和同步动作
 - 成功结果，以及失败仓库的错误信息或冲突信息
+
+清理本地 `develop` 时聚焦：
+- 当前识别到的任务
+- 将处理哪些仓库
+- 已删除本地 `develop` 的仓库
+- 本来就没有本地 `develop` 的仓库
+- 因当前正在 `develop` 或 git 错误导致失败的仓库
