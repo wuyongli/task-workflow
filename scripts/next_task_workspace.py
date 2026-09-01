@@ -49,8 +49,15 @@ def _phase_document_name(base_name: str, task_name: str) -> str:
     return f"{path.stem}-{task_name}{suffix}"
 
 
-def render_next_phase_plan(task_name: str, repo_keys: list[str], previous_task_name: str, previous_plan: str) -> str:
+def render_next_phase_plan(
+    task_name: str,
+    repo_keys: list[str],
+    previous_task_name: str,
+    previous_plan: str,
+    bbs_id: str | None = None,
+) -> str:
     repo_text = ", ".join(repo_keys)
+    bbs_line = f"- 需求编号：#{bbs_id}\n" if bbs_id else ""
     return f"""# {task_name}
 
 > 使用原则：
@@ -61,7 +68,7 @@ def render_next_phase_plan(task_name: str, repo_keys: list[str], previous_task_n
 
 ## 阶段说明
 - 当前阶段任务：{task_name}
-- 前置阶段任务：{previous_task_name}
+{bbs_line}- 前置阶段任务：{previous_task_name}
 - 历史阶段方案：./{previous_plan}
 - 当前阶段状态：方案中
 
@@ -103,13 +110,16 @@ def render_next_index(
     next_plan_name: str,
     previous_plan_name: str,
     phase: int,
+    bbs_id: str | None = None,
 ) -> str:
+    bbs_lines = [f"- 需求编号：#{bbs_id}"] if bbs_id else []
     return "\n".join(
         [
             f"# {workspace_title}",
             "",
             "## 任务摘要",
             f"- 当前状态：{next_status}",
+            *bbs_lines,
             f"- 当前主线：已开启“{next_task_name}”阶段，先补充本阶段正式方案。",
             "- 当前阻塞：无",
             "- 下一步：补充当前阶段 plan，并等待明确开发指令。",
@@ -194,6 +204,7 @@ def main() -> int:
     parser.add_argument("next_task_name", help="New stage task name.")
     parser.add_argument("--repo", action="append", dest="repos", help="Repo key to switch for the next stage. Repeatable.")
     parser.add_argument("--config-root", type=Path, default=DEFAULT_CONFIG_ROOT)
+    parser.add_argument("--bbs-id", help="Optional internal BBS feedback id for the new stage task.")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -215,6 +226,7 @@ def main() -> int:
         print(f"[INFO] current status is {previous_status}; treat /task-workflow next as previous stage completed")
 
     next_task_name = sanitize_task_segment(args.next_task_name)
+    next_bbs_id = str(args.bbs_id or "").strip()
     next_branch_name = sanitize_branch_name(next_task_name)
     next_plan_name = _phase_document_name(str(documents.get("plan", "plan.md")), next_task_name)
     docs_task_root = docs_root / args.task_id
@@ -244,6 +256,14 @@ def main() -> int:
         raise ValueError(f"invalid next repo target: {exc}") from exc
 
     selected_repos = [bound_repo_meta_by_key[repo_key] for repo_key in selected_repo_keys]
+    previous_repo_branches = [
+        {
+            "key": str(repo_meta.get("key") or ""),
+            "branch": str(repo_meta.get("branch") or ""),
+        }
+        for repo_meta in repos
+        if isinstance(repo_meta, dict) and str(repo_meta.get("key") or "").strip()
+    ]
 
     failed = False
     repo_keys: list[str] = []
@@ -280,6 +300,12 @@ def main() -> int:
     previous_task_name = str(meta.get("current_task_name") or _task_theme_name(args.task_id))
     previous_plan_name = str(meta.get("active_plan") or documents.get("plan", "plan.md"))
     previous_decision_log_name = str(meta.get("active_decision_log") or "").strip()
+    current_stage = meta.get("current_stage")
+    previous_bbs_id = ""
+    if isinstance(current_stage, dict):
+        previous_bbs_id = str(current_stage.get("bbs_id") or "").strip()
+    if not previous_bbs_id:
+        previous_bbs_id = str(meta.get("bbs_id") or "").strip()
     if not previous_decision_log_name:
         default_decision_log_name = str(documents.get("decision_log", "") or "").strip()
         if default_decision_log_name and (docs_task_root / default_decision_log_name).exists():
@@ -293,7 +319,10 @@ def main() -> int:
         "task_name": previous_task_name,
         "status": "已完成",
         "plan": previous_plan_name,
+        "repos": previous_repo_branches,
     }
+    if previous_bbs_id:
+        previous_phase["bbs_id"] = previous_bbs_id
     if previous_decision_log_name:
         previous_phase["decision_log"] = previous_decision_log_name
     previous_phases.append(previous_phase)
@@ -305,13 +334,38 @@ def main() -> int:
     meta["current_task_name"] = next_task_name
     meta["active_plan"] = next_plan_name
     meta.pop("active_decision_log", None)
+    if next_bbs_id:
+        meta["bbs_id"] = next_bbs_id
+    else:
+        meta.pop("bbs_id", None)
+    meta["current_stage"] = {
+        "phase": current_phase + 1,
+        "task_name": next_task_name,
+        "status": "方案中",
+        "resume_status": "方案中",
+        "plan": next_plan_name,
+        "repos": [
+            {
+                "key": str(repo_meta.get("key") or ""),
+                "branch": str(repo_meta.get("branch") or ""),
+            }
+            for repo_meta in repos
+            if isinstance(repo_meta, dict) and str(repo_meta.get("key") or "").strip()
+        ],
+    }
+    if next_bbs_id:
+        meta["current_stage"]["bbs_id"] = next_bbs_id
     meta["previous_phases"] = previous_phases
     save_yaml(meta_path, meta, args.dry_run)
 
     workspace_title = _task_theme_name(args.task_id)
     index_path = docs_task_root / documents.get("index", "index.md")
     progress_path = docs_task_root / documents.get("progress", "progress.md")
-    write_text(next_plan_path, render_next_phase_plan(next_task_name, repo_keys, previous_task_name, previous_plan_name), args.dry_run)
+    write_text(
+        next_plan_path,
+        render_next_phase_plan(next_task_name, repo_keys, previous_task_name, previous_plan_name, next_bbs_id or None),
+        args.dry_run,
+    )
     write_text(
         index_path,
         render_next_index(
@@ -322,6 +376,7 @@ def main() -> int:
             next_plan_name=next_plan_name,
             previous_plan_name=previous_plan_name,
             phase=current_phase + 1,
+            bbs_id=next_bbs_id or None,
         ),
         args.dry_run,
     )

@@ -27,7 +27,7 @@ from task_workflow_lib import (
 DEFAULT_CONFIG_ROOT = Path("/Users/wuyongli/Documents/sg-project/_workspace/config")
 
 
-def render_index(task_name: str) -> str:
+def render_index(task_name: str, bbs_id: str | None = None) -> str:
     lines = [
         f"# {task_name}",
         "",
@@ -48,11 +48,14 @@ def render_index(task_name: str) -> str:
         "- 当前附录：",
         "",
     ]
+    if bbs_id:
+        lines.insert(4, f"- 需求编号：#{bbs_id}")
     return "\n".join(lines)
 
 
-def render_plan(task_name: str, repo_keys: list[str]) -> str:
+def render_plan(task_name: str, repo_keys: list[str], bbs_id: str | None = None) -> str:
     repo_text = ", ".join(repo_keys)
+    source_text = f"BBS #{bbs_id}" if bbs_id else ""
     return f"""# {task_name} 任务计划
 
 > 使用原则：
@@ -104,7 +107,7 @@ def render_plan(task_name: str, repo_keys: list[str]) -> str:
 - 是否影响需求成立性、方案取舍或主改仓判断：
 
 ## 参考信息
-- 需求来源：
+- 需求来源：{source_text}
 - 当前相关仓库：{repo_text}
 - 相关说明：如果任务进入深入方案阶段，再把本文件扩展为正式版结构；只有当取舍过程明显过长时，再额外拆出 `decision-log.md`
 """
@@ -175,6 +178,7 @@ def main() -> int:
     parser.add_argument("--repo", action="append", dest="repos", required=True, help="Repo key to include. Repeatable.")
     parser.add_argument("--config-root", type=Path, default=DEFAULT_CONFIG_ROOT)
     parser.add_argument("--date", default=dt.date.today().isoformat(), help="Task date prefix in YYYY-MM-DD.")
+    parser.add_argument("--bbs-id", help="Optional internal BBS feedback id for this task or phase.")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -186,6 +190,7 @@ def main() -> int:
     documents = workspace_cfg.get("documents", {})
 
     raw_task_name = sanitize_task_segment(args.task_name)
+    bbs_id = str(args.bbs_id or "").strip()
     task_id = f"{args.date}-{raw_task_name}"
     branch_name = sanitize_branch_name(raw_task_name)
     task_code_root = tasks_root / task_id
@@ -263,8 +268,8 @@ def main() -> int:
         plan_name = documents.get("plan", "plan.md")
         progress_name = documents.get("progress", "progress.md")
 
-        write_text(task_docs_root / index_name, render_index(raw_task_name), args.dry_run)
-        write_text(task_docs_root / plan_name, render_plan(raw_task_name, repo_keys), args.dry_run)
+        write_text(task_docs_root / index_name, render_index(raw_task_name, bbs_id or None), args.dry_run)
+        write_text(task_docs_root / plan_name, render_plan(raw_task_name, repo_keys, bbs_id or None), args.dry_run)
         write_text(task_docs_root / progress_name, render_progress(raw_task_name), args.dry_run)
 
         meta = {
@@ -275,8 +280,18 @@ def main() -> int:
             "phase": 1,
             "current_task_name": raw_task_name,
             "active_plan": plan_name,
+            "current_stage": {
+                "phase": 1,
+                "task_name": raw_task_name,
+                "status": "方案中",
+                "resume_status": "方案中",
+                "plan": plan_name,
+            },
             "repos": repo_meta_rows,
         }
+        if bbs_id:
+            meta["bbs_id"] = bbs_id
+            meta["current_stage"]["bbs_id"] = bbs_id
         save_yaml(task_docs_root / "meta.yaml", meta, args.dry_run)
 
         if args.dry_run:

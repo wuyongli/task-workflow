@@ -2,12 +2,47 @@
 
 ## 目标识别
 
-`publish` / `sync` / `clean-develop` 共用目标识别规则：
+`publish` / `sync` / `clean-develop` / `pr` 共用目标识别规则：
 - 默认从当前任务上下文识别当前要操作的任务，不额外要求用户重复提供 task 标识
 - 如果当前上下文无法唯一识别任务，才向用户补充确认
 - 目标表达的核心是“目标分类”，不是固定仓库名；执行时需要在当前任务绑定仓库里动态匹配对应的后端、手机前端、PC 前端仓库
 - 常见说法包括 `后端`、`手机前端`、`PC前端`、`前端`
 - 如果用户只说“前端”，且当前任务里只有一个前端仓库，可以直接匹配；如果同时存在手机前端和 PC 前端，则应要求用户明确
+
+## PR
+
+显式命令：
+
+```text
+/task-workflow pr [目标1] [目标2] [...] [--title <标题>] [--desc <描述>] [--reviewer <用户>]... [--task-link <BBS链接>] [--no-wip]
+```
+
+规则：
+- 用户显式输入 `/task-workflow pr ...`，或明确要求为指定任务仓库创建合并请求时，视为已授权执行创建；查看、列出或评审 PR 不视为创建授权
+- 默认不指定目标时，处理当前任务下全部绑定仓库；指定目标时，继续使用和 publish / sync 一样的自然语言目标识别方式
+- 一次多个目标时，先统一识别并校验目标，再并行创建；一个仓库失败不阻断其它仓库
+- 源分支直接使用 `meta.yaml` 中该仓库记录的任务分支；目标分支默认使用仓库远程默认分支，用户明确提供目标分支时才覆盖
+- 创建前先加载当前任务的 `meta.yaml`，确认目标仓库存在，当前分支与记录分支一致且工作区干净
+- 先运行 `sg pr status` 检查当前分支；若已存在开放 PR，输出其状态和链接，停止创建
+- 若当前分支尚未推送到 `origin`，先执行 `git push -u origin <当前分支>`；这是创建 PR 的必要前置操作，但不得自动 commit、force-push 或改写历史
+- 未指定 `--title` 时，默认标题仅为 `任务名（是否有前端/后端）`；`sg pr create` 会自动添加创建当天和从 `--task-link` 解析的 BBS 编号，task-workflow 不得将任务日期或 `bbs_id` 再传入 `--title`
+- 标题里的任务名优先取 `current_stage.task_name`，其次取 `current_task_name`，最后取 `task_id` 去掉日期后的名称
+- 标题括号表示当前任务是否还有另一端配套改动，不表示当前 PR 所属仓库类型
+- 创建后端 PR 时，如果当前任务绑定仓库里还有任一前端仓库，标题追加 `（有前端）`；没有前端仓库时省略括号
+- 创建前端 PR 时，如果当前任务绑定仓库里还有后端仓库，标题追加 `（有后端）`；没有后端仓库时省略括号
+- 手机前端和 PC 前端都按“前端”归类；如果一个任务同时有手机前端和 PC 前端，但没有后端，创建前端 PR 时不因为另一个前端仓库追加 `（有后端）`
+- 如果仓库类型无法从当前任务绑定仓库和 `repositories.yaml` 判断，先不要强行补括号；必要时向用户确认
+- 脚本或 AI 需要拼默认标题时，优先复用 `scripts/task_workflow_lib.py` 的 `build_pr_default_title(...)`，不要重新手写一套括号判断
+- 用户显式提供 `--title` 时，完全使用用户标题，不再自动拼默认标题
+- 在目标仓库根目录创建：默认使用 `sg pr create --target <远程默认分支> --wip`；按用户提供或默认生成的 `--title`，以及用户提供的 `--desc`、重复的 `--reviewer` 与 `--task-link` 追加参数
+- 用户传 `--no-wip`，或明确说“取消 WIP / 不要 WIP / 创建正式 PR”时，调用 `sg pr create` 时省略 `--wip`；不要把 `--no-wip` 透传给 `sg pr create`，它只是 task-workflow 层的意图参数
+- `sg pr create` 失败时只展示命令输出和错误，不改用 `glab` / `gitlab` 等客户端，不自动重试或修改既有 PR
+
+示例：
+
+```bash
+sg pr create --target master --title "采购优化（有前端）" --reviewer alice --wip
+```
 
 ## Publish
 
@@ -116,3 +151,8 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/clean_develop_t
 - 已删除本地 `develop` 的仓库
 - 本来就没有本地 `develop` 的仓库
 - 因当前正在 `develop` 或 git 错误导致失败的仓库
+
+创建 PR 时聚焦：
+- 当前识别到的任务、当前阶段和可选 `bbs_id`
+- 每个目标仓库的源分支、目标分支、默认或用户指定标题
+- 已有 PR 检查、首次推送、创建结果、PR 编号和链接

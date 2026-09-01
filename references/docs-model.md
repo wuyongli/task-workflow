@@ -83,6 +83,7 @@ _docs/<task-id>/
 - `当前入口` 只保留当前必读文档；不要把历史材料、所有资产、所有子文档都列成全量目录
 - 如果任务已经拆出模块子方案或附录，只在 `index.md` 中保留当前仍有效、仍需导航的 1-3 个入口，不要把过期子文档继续挂在导航里
 - 如果任务已经进入多阶段模式，`index.md` 不能只写当前生效 plan；还必须写清当前阶段任务、前置阶段任务、阶段关系、当前 plan、历史阶段文档入口，但仍保持卡片化
+- 如果当前任务或阶段有 `bbs_id`，`index.md` 可在任务摘要里显示一行需求编号；不要把 BBS 讨论过程复制进摘要
 - `index.md` 目标控制在一屏内；超过 1500 字符应主动压缩，超过 2000 字符视为结构失控，更新时必须先瘦身
 - 不允许一条 bullet 写成长段方案；如果一条内容超过两行，应下沉到 `plan.md`、`progress.md` 或模块子方案后在 `index.md` 只保留链接
 
@@ -193,8 +194,48 @@ _docs/<task-id>/
 - `index.md` 保持可读，但只做摘要展示，不应重复承担完整机器事实记录
 - `meta.yaml` 尽量最小化，但应完整承载任务机器事实
 - 最低字段应包含：`task_id`、`status`、`resume_status`、`coding_allowed`、以及每个仓库的 `key`、`repo_dir`、`branch`
+- 顶层 `status` / `resume_status` 表示当前阶段状态，用于兼容现有脚本；多阶段任务还应同步维护 `current_stage.status` / `current_stage.resume_status`
+- 可选 `bbs_id` 表示当前任务或当前阶段的内部需求反馈编号；同一工作空间进入新阶段后，只有用户提供新的编号时才写入新阶段，没有编号时不要写空字段或占位字段
 - 只要任务状态、`resume_status`、仓库路径或记录分支发生变化，必须优先更新 `meta.yaml`，再确保 `index.md` 与之对齐
 - 当一次更新同时涉及 `index.md` 与 `meta.yaml` 时，视 `meta.yaml` 为最终机器事实，不要反过来只根据 `index.md` 推断
 - 除非 `meta.yaml` 缺失或损坏，否则恢复上下文时必须先读它，再读其他任务文档
 - 项目惯例判断、复用结论、方案取舍理由默认不写入 `meta.yaml`；当前有效内容应写在 `plan.md`，过程性讨论可写入 `decision-log.md`
-- 如果任务进入多阶段模式，`meta.yaml` 应额外记录当前阶段和阶段链路，例如：当前阶段编号或名称、当前任务名、当前 plan、历史阶段列表
+- 如果任务进入多阶段模式，`meta.yaml` 应额外记录当前阶段和阶段链路，例如：当前阶段编号或名称、当前任务名、当前 plan、当前阶段状态、阶段内仓库分支、可选 `bbs_id`、历史阶段列表
+
+推荐形态：
+
+以下示例展示的是“带 BBS 编号的多阶段任务”。如果当前任务没有编号，省略顶层 `bbs_id`、`current_stage.bbs_id` 和 `previous_phases[].bbs_id`，不要保留空值或模板占位。
+
+```yaml
+task_id: 2026-08-20-任务名
+status: 方案中
+resume_status: 方案中
+coding_allowed: false
+bbs_id: "53850"
+phase: 2
+current_task_name: 二期任务
+active_plan: plan-二期任务.md
+current_stage:
+  phase: 2
+  task_name: 二期任务
+  status: 方案中
+  resume_status: 方案中
+  plan: plan-二期任务.md
+  bbs_id: "53850"
+  repos:
+    - key: producer-backend
+      branch: 二期任务
+previous_phases:
+  - phase: 1
+    task_name: 一期任务
+    status: 已完成
+    plan: plan.md
+    bbs_id: "52300"
+    repos:
+      - key: producer-backend
+        branch: 一期任务
+repos:
+  - key: producer-backend
+    repo_dir: producer-backend__任务名
+    branch: 二期任务
+```

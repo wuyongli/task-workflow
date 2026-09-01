@@ -22,6 +22,24 @@ docker compose --env-file docker/.env --env-file docker/.task.env \
   exec app sh -lc 'cd /usr/src/pf.senguo.cc && python -m pytest ...'
 ```
 
+## 前端本地依赖环境
+
+适用于配置为 `patch-node-frontend-environment` 的前端任务工作区。
+
+规则：
+- 前端 Vitest、`npm run typecheck`、本地启动前，先使用项目声明的 Node 版本；有 `.nvmrc` 优先 `.nvmrc`，否则使用 `package.json` 的 `volta.node`
+- `@rolldown/binding-darwin-*`、`@typescript/typescript-darwin-*`、`@parcel/watcher-*`、`lightningcss-*`、`sass-embedded-*` 这类包属于平台原生 optional dependency；缺失通常是本地设备 / Node 架构漂移，不是业务代码失败
+- 如果已有 `node_modules`，且 `package-lock.json` 声明的当前平台 optional native 包缺失，`prepare_task_runtime.py` 会执行本地修复命令，默认 `npm ci --include=optional`
+- 如果 `node_modules` 不存在，仍按仓库配置的 `install_commands` 首次安装；不要把新任务创建变成默认安装业务依赖
+- 本地修复只允许影响 `node_modules`；如果修复后 `package.json` 或 `package-lock.json` 出现 diff，必须视为异常，不能作为业务改动提交
+- 不要用切换到另一种架构的 Node 来掩盖问题；最终验证必须回到项目声明 Node 版本和用户默认前端命令
+
+推荐修复入口：
+
+```bash
+python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_runtime.py "YYYY-MM-DD-原始任务名" --repo 手机前端
+```
+
 ## `repositories.yaml`
 
 用于保存可复用的仓库注册表。
@@ -53,6 +71,7 @@ docker compose --env-file docker/.env --env-file docker/.task.env \
 - `auto_start_on_prepare` / `auto_start_steps`: optional startup automation after runtime files are ready
 - each auto-start step may optionally use `allow_failure: true` when a non-critical local service should not block later steps
 - `install_commands`: commands to install dependencies
+- `native_optional_repair_command`: optional command for repairing current-platform frontend optional native dependencies; default `npm ci --include=optional`
 - `start_commands`: commands to start the repo locally
 - `notes`: short runtime remarks for the agent
 - 前端如需自动连同任务后端，优先配置 `local_backend_repo_key` + `backend_task_env_file`，从后端 `TASK_APP_HOST_PORT` 读取端口

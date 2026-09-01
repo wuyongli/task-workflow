@@ -42,7 +42,24 @@ def main() -> int:
         resume_status = str(meta.get("resume_status") or status)
         coding_allowed = bool(meta.get("coding_allowed", False))
         coding_text = "yes" if coding_allowed else "no"
-        print(f"- {task_dir.name} [status={status}, resume={resume_status}, coding_allowed={coding_text}]")
+        current_stage = meta.get("current_stage")
+        if isinstance(current_stage, dict):
+            phase = str(current_stage.get("phase") or meta.get("phase") or "")
+            current_task_name = str(current_stage.get("task_name") or meta.get("current_task_name") or "")
+            bbs_id = str(current_stage.get("bbs_id") or meta.get("bbs_id") or "").strip()
+        else:
+            phase = str(meta.get("phase") or "")
+            current_task_name = str(meta.get("current_task_name") or "")
+            bbs_id = str(meta.get("bbs_id") or "").strip()
+        stage_parts = []
+        if phase:
+            stage_parts.append(f"phase={phase}")
+        if current_task_name:
+            stage_parts.append(f"current={current_task_name}")
+        if bbs_id:
+            stage_parts.append(f"bbs_id={bbs_id}")
+        stage_text = ", " + ", ".join(stage_parts) if stage_parts else ""
+        print(f"- {task_dir.name} [status={status}, resume={resume_status}, coding_allowed={coding_text}{stage_text}]")
         repos = meta.get("repos", [])
         if not isinstance(repos, list):
             continue

@@ -1,6 +1,6 @@
 ---
 name: task-workflow
-description: "Use when the user works with /Users/wuyongli/Documents/sg-project/_workspace task workspaces: create/load/continue tasks, update progress, review/codeview changes, consolidate tests, publish, sync remote master, delete local develop branches, switch local MySQL data directory, inspect task dev URLs or ports, open next-stage work, complete, or clean up."
+description: "Use when the user works with /Users/wuyongli/Documents/sg-project/_workspace task workspaces: create/load/continue tasks, update progress, review/codeview changes, create merge requests, consolidate tests, publish, sync remote master, delete local develop branches, switch local MySQL data directory, inspect task dev URLs or ports, open next-stage work, switch task stages, complete, or clean up."
 ---
 
 # 任务工作流
@@ -15,9 +15,11 @@ description: "Use when the user works with /Users/wuyongli/Documents/sg-project/
 - 仓库真实 clone 放在 `_tasks/<task-id>/<repo>__<task-name>`
 - 任务绑定以路径名为准，不以分支名为准
 - 一个工作空间可以承载同一长期主题下的多个阶段任务，但任一时刻只应有一个“当前阶段任务”
+- 多阶段任务必须区分每个阶段自己的状态；顶层 `status` 表示当前阶段状态，历史阶段状态记录在 `previous_phases`
+- 任务或阶段可以带可选 `bbs_id`，用于记录内部需求反馈编号
 
 文档分层：
-- `meta.yaml`：机器事实，只记录状态、分支、当前阶段、当前主计划等可恢复信息
+- `meta.yaml`：机器事实，只记录状态、分支、当前阶段、当前主计划、可选 `bbs_id` 等可恢复信息
 - `index.md`：人读任务摘要，只保留当前状态、当前主线、当前阻塞、下一步和当前入口
 - `plan.md`：当前有效方案，只保留已经成立的方案结论、核心决策原因、开发方案、数据变更和上线方案
 - `progress.md`：执行记录，只记录实际做了什么、验证了什么、发布了什么、阻塞和下一步
@@ -91,16 +93,19 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/init_workspace.
 
 ```bash
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/create_task_workspace.py "原始任务名" --repo producer-backend --repo pf-mproducer-supplier
+python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/create_task_workspace.py "原始任务名" --bbs-id 53850 --repo producer-backend
 ```
 
 运行说明：
 - `create_task_workspace.py` will only补齐缺失的本地运行配置，不会覆盖 task clone 里已有文件
+- `--bbs-id` 是选填；用户提供内部需求反馈编号时才写入 `meta.yaml` 和初始文档，不提供时不生成空编号占位
 - 不会自动安装项目业务依赖；`producer-backend` 仅会为任务 app 容器补齐必要测试工具
 - 任务分支只以远端默认分支作为起点，不自动跟踪 `origin/master` 或其他默认分支；首次推送任务分支时再建立自己的 upstream
 - 如果用户一开始就明确“一期 / 二期 / 分阶段 / 先做 A 再做 B”，从创建任务开始读取 [stages.md](references/stages.md)，按阶段化文档模型处理
 - 对于配置为 `shared-backend-app` 的后端，会生成任务及仓库级 Docker 辅助文件；同一任务的多个后端各自启动独立 `app` 容器，同时复用共享基础设施
 - 对于配置为 `shared-backend-app` 的后端，任务 app 启动后会检查容器内是否可用 `pytest`；缺失时自动安装 `pytest==7.4.4`
 - 当 `repositories.yaml` 开启 `auto_start_on_prepare` 时，运行配置准备阶段也会执行配置里的自动启动步骤
+- 对于配置为 `patch-node-frontend-environment` 的前端，运行配置准备阶段会检查并修复当前 Node 平台缺失的原生 optional 依赖；这是本地环境准备，不是业务代码改动
 - 如果主仓本地配置后续发生变化，可以重新执行：
 
 ```bash
@@ -124,7 +129,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_ru
 - `index.md` 是给人读的摘要页，不负责定义机器事实
 - 如果 `index.md` 与 `meta.yaml` 不一致，优先以 `meta.yaml` 为准，再在同一轮把摘要文档修正到一致
 - 如果没有先读 `meta.yaml`，就不要声称已经完成任务状态核对、仓库绑定核对或记录分支核对
-- 如果任务已经进入多阶段模式，先用 `meta.yaml` 确认当前阶段、当前分支、当前 plan，再用 `index.md` 理解当前阶段与历史阶段的关系
+- 如果任务已经进入多阶段模式，先用 `meta.yaml` 确认当前阶段、当前阶段状态、当前分支、当前 plan 和可选 `bbs_id`，再用 `index.md` 理解当前阶段与历史阶段的关系
 
 路径查找规则：
 - 如果当前仓库路径匹配 `_tasks/<task-id>/<repo-dir>`，就直接从 `<task-id>` 反查任务
@@ -205,7 +210,32 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_ru
 - 有未提交本地改动的仓库不继续同步，只展示 `git status --short`
 - 同步冲突、工作区异常、分支异常或 git 报错时，只反馈事实，不自动修代码、不自动解冲突
 
-### 7. Clean Develop
+### 7. PR
+
+用于为当前任务的指定仓库创建合并请求。
+
+显式命令：
+
+```text
+/task-workflow pr [目标1] [目标2] [...] [--title <标题>] [--desc <描述>] [--reviewer <用户>]... [--task-link <BBS链接>] [--no-wip]
+```
+
+执行前必须读取 [publish-sync.md](references/publish-sync.md)。
+
+关键边界：
+- 用户显式输入 `/task-workflow pr ...` 或明确要求为指定任务仓库创建合并请求时，视为已授权创建 PR；不把“查看 PR”“检查 PR 状态”视为创建授权
+- 默认不指定目标时，为当前任务下全部绑定仓库创建 PR；指定目标时，目标表达方式与 publish / sync 相同
+- 目标仓库按当前任务绑定仓库动态识别；多目标默认并行，单个仓库失败不阻断其它仓库
+- 源分支直接使用 `meta.yaml` 记录的任务分支；目标分支使用各仓库远程默认分支，用户明确指定目标分支时才覆盖
+- 未指定 `--title` 时，PR 标题默认按 `任务名（是否有前端/后端）` 生成；日期和 BBS 编号由 `sg pr create` 按创建当天和 `--task-link` 自动拼接，task-workflow 不重复加入
+- 创建前先确认仓库存在、当前分支与 `meta.yaml` 记录分支一致、工作区干净，并用 `sg pr status` 检查当前分支没有已存在的开放 PR
+- 源分支尚未推送时，允许先执行普通 `git push -u origin <当前分支>`；不自动提交、不 force-push、不改写历史
+- 默认创建 WIP PR：`sg pr create --target <远程默认分支> --wip`
+- 用户传 `--no-wip`，或明确说“取消 WIP / 不要 WIP / 创建正式 PR”时，调用 `sg pr create` 时省略 `--wip`
+- `--reviewer` 可重复；取消 WIP 只影响是否追加 `--wip`，不改变目标分支、标题、描述、reviewer 或授权边界
+- 若已有开放 PR、仓库状态异常、分支不一致、推送失败或 CLI 返回错误，只反馈事实，不自动关闭、编辑、合并或重试已有 PR
+
+### 8. Clean Develop
 
 用于发布前清理当前任务仓库里的本地 `develop` 分支，避免后续 `sg publish` 合入远程 `develop` 前误用落后的本地分支。
 
@@ -232,7 +262,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/clean_develop_t
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/clean_develop_task_workspace.py "YYYY-MM-DD-原始任务名" 后端 手机前端
 ```
 
-### 8. MySQL
+### 9. MySQL
 
 用于在产地后端和批发后端本地开发之间，显式切换共享 MySQL 容器的数据目录。
 
@@ -257,7 +287,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_mys
 - 当前数据目录不匹配时，只重建 MySQL 容器，输出切换前后目录
 - 切换会让正在连接 MySQL 的任务 app 短暂断开，必要时重启对应后端 app
 
-### 9. Review
+### 10. Review
 
 用于任务开发完成或准备上线前，对当前任务改动做代码审查、项目规则审查、对抗式审查，并收敛测试代码。
 
@@ -275,6 +305,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_mys
 执行规则：
 - 用户说“代码审查”“检查代码改动”“收敛测试代码”“一次性测试可以去掉”时，按 `review` 处理
 - 先恢复任务上下文，再基于真实 diff、真实项目规则和真实代码路径审查
+- 如果 review 目标包含前端，跑 Vitest / `npm run typecheck` 前必须先执行 `prepare_task_runtime.py <task-id> --repo <目标前端>`；不能直接把 `@rolldown/binding-darwin-*`、`@typescript/typescript-darwin-*` 缺失列为验证阻断
 - 默认做三轮：通用 code review、对抗式审查、测试代码收敛审查
 - 默认只输出结论，不改代码；用户明确授权“明确问题直接修”“测试代码可以收敛/删除”时才修改
 - 详细流程和判断标准见 [review.md](references/review.md)
@@ -310,7 +341,11 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_mys
 
 适用于 `producer-backend` 任务工作区。优先在当前任务自己的后端仓库根目录运行测试；宿主机依赖不完整时切换到当前任务 Docker app 容器，不要误用共享主仓容器。详细命令见 [runtime.md](references/runtime.md)。
 
-### 10. Complete
+### 前端验证环境
+
+前端 Vitest / `npm run typecheck` 前，先按 [runtime.md](references/runtime.md) 准备项目声明的 Node 版本和当前平台原生 optional 依赖。`@rolldown/binding-darwin-*`、`@typescript/typescript-darwin-*` 缺失默认按本地设备 / Node 架构问题处理，不当成业务代码失败。
+
+### 11. Complete
 
 用于编码和自测完成后标记任务完成。
 
@@ -329,7 +364,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_mys
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/complete_task_workspace.py "YYYY-MM-DD-原始任务名"
 ```
 
-### 11. Next
+### 12. Next
 
 用于在同一个任务工作空间内开启下一阶段任务，例如一期上线后继续做二期。
 
@@ -337,7 +372,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/complete_task_w
 
 ```text
 /task-workflow next <新任务名>
-/task-workflow next <新任务名> --repo <repo-key> [--repo <repo-key> ...]
+/task-workflow next <新任务名> [--bbs-id <编号>] [--repo <repo-key> ...]
 ```
 
 执行前必须读取 [stages.md](references/stages.md)。
@@ -347,19 +382,49 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/complete_task_w
 - 用户明确调用 `next` 时，视为用户确认上一阶段已经完成或已上线；通常不需要先单独运行 `complete`
 - 允许从 `开发中` / `测试中` / `已完成` 进入下一阶段，不允许从 `方案中` 直接切阶段
 - 新阶段分支默认基于远程 `master` 最新代码创建，不承接当前本地任务分支
+- `--bbs-id` 是选填；新阶段可以指定新的 `bbs_id`，如果不指定，不默认沿用上一阶段的 `bbs_id`
 - 阶段化和子任务拆分按用户产品口径判断，不按前端/后端/PC/手机端技术面机械拆分
 - 没有子任务时，当前阶段 plan 是当前阶段唯一方案来源；有子任务时，子文档才承接详细方案
-- 开启新阶段后，默认把状态重置为 `方案中`
+- 开启新阶段后，默认把当前阶段状态重置为 `方案中`，上一阶段记录为 `已完成`
 
 推荐命令：
 
 ```bash
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_workspace.py "YYYY-MM-DD-原始任务名" "新任务名"
+python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_workspace.py "YYYY-MM-DD-原始任务名" "新任务名" --bbs-id 53850
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_workspace.py "YYYY-MM-DD-原始任务名" "新任务名" --repo pf-mproducer-supplier
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_workspace.py "YYYY-MM-DD-原始任务名" "新任务名" --repo 手机前端
 ```
 
-### 12. Cleanup
+### 13. Stage
+
+用于在多阶段任务中切回或切换到某个已记录阶段，例如进入二期后临时回到一期分支处理问题。
+
+显式命令：
+
+```text
+/task-workflow stage <阶段编号或阶段任务名>
+```
+
+执行前必须读取 [stages.md](references/stages.md)。
+
+关键边界：
+- `stage` 是阶段切换，不是新建阶段；新建下一阶段仍使用 `next`
+- 切换阶段必须同步仓库分支、`meta.yaml` 当前阶段、`active_plan` 和 `index.md`，不要只手动 `git checkout`
+- 切换前要求当前仓库工作区干净，且当前分支与 `meta.yaml` 记录分支一致
+- 目标阶段必须已经记录全部绑定仓库分支；缺少任一绑定仓库分支时直接阻断
+- 目标本地分支不存在时直接阻断，不基于远程分支、`master` 或阶段名重建
+- 如果多仓 checkout 中途失败，停止写入 `meta.yaml` 和文档，明确提示已切/未切仓库，让用户确认后再恢复一致状态
+- 切换成功后，原当前阶段会进入 `previous_phases`，目标阶段成为当前阶段
+
+推荐命令：
+
+```bash
+python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_stage.py "YYYY-MM-DD-原始任务名" "1"
+python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_stage.py "YYYY-MM-DD-原始任务名" "一期任务名"
+```
+
+### 14. Cleanup
 
 用于任务已完成，并且需要清理任务代码目录的时候。
 
@@ -378,7 +443,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_works
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/cleanup_task_workspace.py "YYYY-MM-DD-原始任务名"
 ```
 
-### 13. Status
+### 15. Status
 
 用于用户想快速查看任务状态和任务仓库路径。
 
@@ -394,7 +459,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/cleanup_task_wo
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/status_task_workspace.py
 ```
 
-### 14. Portal
+### 16. Portal
 
 用于在浏览器里快速查看当前开发中任务对应的手机端、PC 端和后端端口，不再手工记忆任务与端口的映射关系。
 
@@ -430,7 +495,9 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/serve_task_dev_
 - 本文件用于路由任务和确认关键边界；涉及细节时按场景读取 reference
 - 当需要更新任务文档、拆分方案、处理 `meta.yaml` 或判断文档职责时，读取 [docs-model.md](references/docs-model.md)
 - 当用户表达分阶段、一二期、开启下一阶段或拆产品子任务时，读取 [stages.md](references/stages.md)
+- 当用户表达切回上一阶段、切到某一期、回到历史阶段处理问题时，使用 `switch_task_stage.py`，不要只手动 `git checkout`
 - 当需要发布或同步远程主线时，读取 [publish-sync.md](references/publish-sync.md)
+- 当需要创建合并请求时，读取 [publish-sync.md](references/publish-sync.md)，先确认当前 `sg pr` 支持所需能力，再使用 `sg pr`，不改用其他 PR 客户端
 - 当需要清理任务仓库的本地 `develop` 分支时，使用 `clean_develop_task_workspace.py`，不要操作远程 `origin/develop`
 - 当需要准备 runtime、解释 `repositories.yaml` / `workspace.yaml` 字段、处理后端测试环境时，读取 [runtime.md](references/runtime.md)
 - 当需要切换本地共享 MySQL 数据目录时，使用 `switch_task_mysql.py`，不要把切库动作混入普通后端启动
@@ -448,6 +515,11 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/serve_task_dev_
 当用户要求同步远程主线时，回复应聚焦于：
 - 按 [publish-sync.md](references/publish-sync.md) 输出任务、目标、仓库、同步动作、成功结果、失败错误或冲突信息
 
+当用户要求创建合并请求时，回复应聚焦于：
+- 当前识别到的任务、目标仓库、`meta.yaml` 记录的源分支和远程默认目标分支
+- 已有 PR 检查、工作区和分支核验结果
+- 是否执行了源分支首次推送，以及 `sg pr create` 的结果、PR 编号和链接
+
 当用户要求删除本地 `develop` 分支时，回复应聚焦于：
 - 当前识别到的任务和目标仓库
 - 哪些仓库已删除本地 `develop`
@@ -462,9 +534,10 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/serve_task_dev_
 当用户要求代码审查时，回复应聚焦于：
 - 当前识别到的任务、目标仓库和 review 基线
 - 是否发现并应用项目级 review 规则
-- findings 优先，按严重程度排序，包含文件/行号、问题、影响和建议
-- 对抗式审查发现的风险或无发现结论
-- 测试代码收敛结论：建议保留、建议删除/合并、需要用户确认的测试
+- 按 `阻塞问题 / 明确缺陷`、`非阻塞风险`、`代码质量优化`、`测试代码收敛`、`验证建议` 分层输出
+- 未发现阻塞问题不等于没有优化空间；不要把“未发现阻塞问题”简写成“没有问题”
+- 没有内容的层级可以用一行 `未发现` 收起，但不能省略代码质量优化和测试收敛 pass
+- findings 按严重程度排序，包含文件/行号、问题、影响和建议
 - 是否阻塞上线或进入发布
 
 发布场景下的协作约束：
@@ -476,10 +549,16 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/serve_task_dev_
 - 不要把“准备怎么 merge、怎么解冲突、要不要顺手修代码”这类后续动作自动串进去
 - 如果同步失败，默认停在“展示失败仓库和错误信息”这一步，等用户确认后再继续处理
 
+创建合并请求场景下的协作约束：
+- 不要把 `sg pr create` 改为 `glab`、`gitlab` 或未知的第三方客户端
+- 没有明确创建授权时，只能用 `sg pr status`、`list` 或 `view` 查询，不创建 PR
+- 不要因为创建 PR 而自动提交、修改现有 PR、合并 PR 或删除分支
+
 审查场景下的协作约束：
 - 不要只输出泛泛建议；必须基于真实 diff、真实项目规则和真实代码路径给结论
 - 不要把大 diff 从头线性扫完当作认真；先收敛到任务相关路径和当前 patch，再决定是否扩散
 - 不要因为没有发现阻塞问题就省略测试收敛 pass；测试代码价值判断是 review 的固定组成部分
+- 不要因为没有发现阻塞问题就省略代码质量优化 pass；只列有明确维护成本、容易误用、低成本可修的优化点，不列纯风格偏好
 - 不要把“可能有问题”包装成明确 bug；明确 bug、风险、待确认项要分开
 - 如果用户只要求 review，默认不改代码；如果用户授权修明确问题，仍然只修明确问题
 

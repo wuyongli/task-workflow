@@ -76,6 +76,22 @@ def main() -> int:
 
     meta["status"] = "已完成"
     meta["resume_status"] = "已完成"
+    current_stage = meta.get("current_stage")
+    if isinstance(current_stage, dict):
+        current_stage["status"] = "已完成"
+        current_stage["resume_status"] = "已完成"
+    else:
+        stage = {
+            "phase": meta.get("phase", 1),
+            "task_name": str(meta.get("current_task_name") or args.task_id),
+            "status": "已完成",
+            "resume_status": "已完成",
+            "plan": str(meta.get("active_plan") or documents.get("plan", "plan.md")),
+        }
+        bbs_id = str(meta.get("bbs_id") or "").strip()
+        if bbs_id:
+            stage["bbs_id"] = bbs_id
+        meta["current_stage"] = stage
     save_yaml(meta_path, meta, args.dry_run)
 
     index_path = docs_root / args.task_id / documents.get("index", "index.md")

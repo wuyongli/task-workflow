@@ -529,7 +529,7 @@ def render_html(task_cards: list[dict[str, object]], output_path: Path) -> str:
     </section>
 
     <div class="footer">
-      说明：页面数据来自 `_docs/*/meta.yaml` 与前端 `.codex/task-runtime.env`。实时地址刷新即可更新；静态文件需重新生成。
+      说明：页面数据来自 `_docs/*/meta.yaml` 与前端 `.codex/task-runtime.env`。本地服务模式下页面每 15 秒自动刷新；静态文件需重新生成。
     </div>
   </div>
   <script>
@@ -553,6 +553,11 @@ def render_html(task_cards: list[dict[str, object]], output_path: Path) -> str:
         button.classList.remove("is-copied");
       }}, 1400);
     }});
+
+      // 保活：本地服务模式下每 15 秒自动刷新，始终展示最新任务、端口和运行状态
+      window.setTimeout(() => {{
+        window.location.reload();
+      }}, 15000);
   </script>
 </body>
 </html>"""

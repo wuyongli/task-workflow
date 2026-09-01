@@ -72,6 +72,54 @@ def _extract_task_parts(task_id: str) -> tuple[str, str]:
     return f"{yyyy}{mm}{dd}", raw_task_name
 
 
+def _current_stage(task_meta: dict[str, Any]) -> dict[str, Any]:
+    current_stage = task_meta.get("current_stage")
+    return current_stage if isinstance(current_stage, dict) else {}
+
+
+def current_task_title_name(task_meta: dict[str, Any]) -> str:
+    current_stage = _current_stage(task_meta)
+    for value in (
+        current_stage.get("task_name"),
+        task_meta.get("current_task_name"),
+    ):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    task_id = str(task_meta.get("task_id") or "").strip()
+    _, raw_task_name = _extract_task_parts(task_id)
+    return raw_task_name.strip()
+
+
+def build_pr_default_title(
+    task_meta: dict[str, Any],
+    target_repo_key: str,
+    bound_repo_keys: list[str],
+    repo_cfg_by_key: dict[str, dict[str, Any]],
+) -> str:
+    title = current_task_title_name(task_meta)
+
+    repo_kinds: dict[str, str] = {}
+    for repo_key in bound_repo_keys:
+        repo_cfg = repo_cfg_by_key.get(repo_key)
+        if repo_cfg is None:
+            continue
+        repo_kind = classify_repo_publish_kind(repo_cfg)
+        if repo_kind:
+            repo_kinds[repo_key] = repo_kind
+
+    target_kind = repo_kinds.get(target_repo_key)
+    has_backend = any(repo_kind == "backend" for repo_kind in repo_kinds.values())
+    has_frontend = any(repo_kind in {"mobile_frontend", "pc_frontend"} for repo_kind in repo_kinds.values())
+    suffix = ""
+    if target_kind == "backend" and has_frontend:
+        suffix = "（有前端）"
+    elif target_kind in {"mobile_frontend", "pc_frontend"} and has_backend:
+        suffix = "（有后端）"
+
+    return title + suffix
+
+
 def build_task_compose_name(task_id: str, repo_key: str) -> str:
     date_part, raw_task_name = _extract_task_parts(task_id)
     pinyin_parts = lazy_pinyin(raw_task_name, errors="ignore")
@@ -890,6 +938,81 @@ def _resolve_node_version(repo_path: Path, package_json: dict[str, Any]) -> str 
     return None
 
 
+def _node_platform_optional_dependency_check() -> str:
+    return (
+        "node -e '"
+        "const fs=require(\"fs\");"
+        "if(!fs.existsSync(\"package-lock.json\"))process.exit(0);"
+        "const packages=JSON.parse(fs.readFileSync(\"package-lock.json\",\"utf8\")).packages||{};"
+        "const supports=(values,current)=>!Array.isArray(values)||(!values.includes(\"!\"+current)&&(values.filter(value=>!value.startsWith(\"!\")).length===0||values.includes(current)));"
+        "const missing=Object.entries(packages).some(([path,pkg])=>path.startsWith(\"node_modules/\")&&pkg&&pkg.optional&&(Array.isArray(pkg.os)||Array.isArray(pkg.cpu))&&supports(pkg.os,process.platform)&&supports(pkg.cpu,process.arch)&&!fs.existsSync(path));"
+        "process.exit(missing?1:0);'"
+    )
+
+
+def _node_frontend_prefix_parts(node_version: str | None) -> list[str]:
+    if not node_version:
+        return []
+    escaped_node_version = _shell_escape_double_quotes(node_version)
+    return [
+        'eval "$(fnm env --shell zsh)"',
+        f'fnm use --install-if-missing {escaped_node_version} >/dev/null',
+    ]
+
+
+def _node_platform_tag(repo_path: Path, node_version: str | None) -> tuple[str, str]:
+    command = " && ".join(_node_frontend_prefix_parts(node_version) + ['node -p "process.platform + \'-\' + process.arch"'])
+    result = subprocess.run(
+        ["zsh", "-lc", command],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=str(repo_path),
+    )
+    platform_arch = result.stdout.strip()
+    if "-" not in platform_arch:
+        raise ValueError(f"unexpected node platform tag: {platform_arch}")
+    platform, architecture = platform_arch.split("-", 1)
+    return platform, architecture
+
+
+def _node_optional_dependency_supports(values: Any, current: str) -> bool:
+    if not isinstance(values, list):
+        return True
+    normalized = [str(value) for value in values]
+    if f"!{current}" in normalized:
+        return False
+    allowed = [value for value in normalized if not value.startswith("!")]
+    return not allowed or current in allowed
+
+
+def _missing_node_platform_optional_dependencies(repo_path: Path, platform: str, architecture: str) -> list[str]:
+    lock_path = repo_path / "package-lock.json"
+    node_modules_path = repo_path / "node_modules"
+    if not lock_path.exists() or not node_modules_path.is_dir():
+        return []
+
+    packages = _load_json(lock_path).get("packages") or {}
+    if not isinstance(packages, dict):
+        return []
+
+    missing: list[str] = []
+    for rel_path, package in packages.items():
+        if not isinstance(rel_path, str) or not rel_path.startswith("node_modules/"):
+            continue
+        if not isinstance(package, dict) or not package.get("optional"):
+            continue
+        if not (isinstance(package.get("os"), list) or isinstance(package.get("cpu"), list)):
+            continue
+        if not _node_optional_dependency_supports(package.get("os"), platform):
+            continue
+        if not _node_optional_dependency_supports(package.get("cpu"), architecture):
+            continue
+        if not (repo_path / rel_path).exists():
+            missing.append(rel_path)
+    return missing
+
+
 def resolve_node_version_for_repo(repo_path: Path) -> str | None:
     package_json_path = repo_path / "package.json"
     if not package_json_path.exists():
@@ -902,14 +1025,15 @@ def _render_node_frontend_environment(
     node_version: str | None,
     install_command: str,
     start_command: str,
+    native_optional_repair_command: str | None = None,
 ) -> str:
-    prefix_parts: list[str] = []
-    if node_version:
-        escaped_node_version = _shell_escape_double_quotes(node_version)
-        prefix_parts.append('eval "$(fnm env --shell zsh)"')
-        prefix_parts.append(f'fnm use --install-if-missing {escaped_node_version} >/dev/null')
-
-    install_guard = f'if [ ! -d node_modules ]; then {install_command}; fi'
+    prefix_parts = _node_frontend_prefix_parts(node_version)
+    platform_optional_dependency_check = _node_platform_optional_dependency_check()
+    repair_command = native_optional_repair_command or "npm ci --include=optional"
+    install_guard = (
+        f"if [ ! -d node_modules ]; then {install_command}; "
+        f"elif ! {platform_optional_dependency_check}; then {repair_command}; fi"
+    )
     setup_command = " && ".join(prefix_parts + [install_guard]) if prefix_parts else install_guard
     start_with_guard = " && ".join(prefix_parts + [install_guard, start_command]) if prefix_parts else f"{install_guard} && {start_command}"
 
@@ -929,6 +1053,55 @@ def _render_node_frontend_environment(
             "",
         ]
     )
+
+
+def _ensure_node_frontend_native_optional_dependencies(
+    runtime_cfg: dict[str, Any],
+    repo_path: Path,
+    node_version: str | None,
+    dry_run: bool,
+) -> dict[str, list[str]]:
+    if runtime_cfg.get("repair_native_optional_dependencies") is False:
+        return {"notes": [], "warnings": []}
+    if not (repo_path / "node_modules").is_dir() or not (repo_path / "package-lock.json").exists():
+        return {"notes": [], "warnings": []}
+
+    try:
+        platform, architecture = _node_platform_tag(repo_path, node_version)
+    except (subprocess.CalledProcessError, ValueError) as exc:
+        return {"notes": [], "warnings": [f"无法确认 Node 平台，跳过前端原生 optional 依赖修复：{exc}"]}
+
+    missing = _missing_node_platform_optional_dependencies(repo_path, platform, architecture)
+    if not missing:
+        return {"notes": [], "warnings": []}
+
+    repair_command = str(runtime_cfg.get("native_optional_repair_command") or "npm ci --include=optional")
+    command = " && ".join(_node_frontend_prefix_parts(node_version) + [repair_command])
+    run_shell(command, dry_run, repo_path)
+
+    notes = [
+        f"检测到当前 Node 平台 {platform}-{architecture} 缺失原生 optional 依赖，已按本地环境修复：{', '.join(missing)}"
+    ]
+    warnings: list[str] = []
+    if not dry_run:
+        still_missing = _missing_node_platform_optional_dependencies(repo_path, platform, architecture)
+        if still_missing:
+            warnings.append(f"前端原生 optional 依赖修复后仍缺失：{', '.join(still_missing)}")
+
+        diff_result = subprocess.run(
+            ["git", "-C", str(repo_path), "diff", "--name-only", "--", "package.json", "package-lock.json"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        changed = [line for line in diff_result.stdout.splitlines() if line.strip()]
+        if changed:
+            warnings.append(
+                "本地依赖修复后 package.json/package-lock.json 出现变更，必须视为异常处理，不要作为业务代码提交："
+                + ", ".join(changed)
+            )
+
+    return {"notes": notes, "warnings": warnings}
 
 
 def _rewrite_frontend_start_command(
@@ -1017,17 +1190,24 @@ def _rewrite_node_frontend_environment(
     environment_path = repo_path / environment_rel_path
 
     effective_start_command = _rewrite_frontend_start_command(package_json, start_commands[0], assigned_port)
+    native_optional_repair_command = str(runtime_cfg.get("native_optional_repair_command") or "npm ci --include=optional")
 
     write_text(
         environment_path,
-        _render_node_frontend_environment(environment_name, node_version, install_commands[0], effective_start_command),
+        _render_node_frontend_environment(
+            environment_name,
+            node_version,
+            install_commands[0],
+            effective_start_command,
+            native_optional_repair_command,
+        ),
         dry_run,
     )
 
     notes: list[str] = []
     if node_version:
         notes.append(f"Codex 启动前会切换 Node.js {node_version}")
-    notes.append("Codex 启动动作会在缺失 node_modules 时自动执行依赖安装")
+    notes.append("Codex 启动动作会在缺失 node_modules 时安装依赖；当前平台原生 optional 依赖缺失时按本地环境修复")
     if assigned_port is not None:
         notes.append(f"Codex 启动动作会固定使用端口 {assigned_port}；端口冲突时直接失败，不再自动跳号")
 
@@ -1450,6 +1630,11 @@ def prepare_repo_runtime(repo_cfg: dict[str, Any], repo_path: Path, dry_run: boo
         generated_files.extend(frontend_runtime["generated_files"])
         generated_notes.extend(frontend_runtime["notes"])
         warnings.extend(frontend_runtime.get("warnings", []))
+
+        node_version = resolve_node_version_for_repo(repo_path)
+        native_repair = _ensure_node_frontend_native_optional_dependencies(runtime_cfg, repo_path, node_version, dry_run)
+        generated_notes.extend(native_repair["notes"])
+        warnings.extend(native_repair["warnings"])
 
         generated = _rewrite_node_frontend_environment(
             repo_cfg,

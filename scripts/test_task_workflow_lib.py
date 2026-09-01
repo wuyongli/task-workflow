@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import socket
 import subprocess
 import tempfile
@@ -16,6 +17,7 @@ import render_task_dev_portal as portal_script
 import serve_task_dev_portal as portal_server_script
 import sync_task_workspace as sync_script
 import switch_task_mysql as mysql_script
+import switch_task_stage as stage_script
 import task_workflow_lib as lib
 import create_task_workspace as create_script
 import prepare_task_runtime as prepare_runtime_script
@@ -70,6 +72,25 @@ class SharedBackendComposeNameTests(unittest.TestCase):
             excludes = exclude_path.read_text(encoding="utf-8").splitlines()
             self.assertIn("docker/.task.env", excludes)
             self.assertIn("docker/docker-compose.task.yml", excludes)
+
+
+class ReviewDocumentationTests(unittest.TestCase):
+    def test_review_docs_separate_blockers_from_quality_optimizations(self) -> None:
+        review_text = (Path(__file__).resolve().parents[1] / "references" / "review.md").read_text(encoding="utf-8")
+
+        for expected in [
+            "阻塞问题 / 明确缺陷",
+            "非阻塞风险",
+            "代码质量优化",
+            "测试代码收敛",
+            "必须先执行 `prepare_task_runtime.py <task-id> --repo <目标前端>`",
+            "runtime prepare 成功后，必须重新执行原始验证命令",
+            "不能把 `@rolldown` / `@typescript` native 缺包写成最终发布验证阻断",
+            "未发现阻塞问题不等于没有优化空间",
+            "只列有明确维护成本、容易误用、低成本可修的优化点",
+            "没有内容的层级可以用一行 `未发现` 收起",
+        ]:
+            self.assertIn(expected, review_text)
 
 
 class StartRepoRuntimeTests(unittest.TestCase):
@@ -239,6 +260,219 @@ class MysqlSwitchTests(unittest.TestCase):
 
 
 class FrontendLocalBackendPatchTests(unittest.TestCase):
+    def test_node_frontend_setup_skips_generic_optional_dependency_absent_from_node_modules(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            (repo_path / "node_modules").mkdir()
+            (repo_path / "package-lock.json").write_text(
+                json.dumps(
+                    {
+                        "lockfileVersion": 3,
+                        "packages": {
+                            "": {"name": "demo-frontend"},
+                            "node_modules/demo-generic-optional": {"optional": True},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            environment = lib._render_node_frontend_environment(
+                "demo-frontend",
+                None,
+                "touch .native-binding-install-ran",
+                "true",
+                "touch .native-binding-install-ran",
+            )
+            setup_line = next(line for line in environment.splitlines() if line.startswith("script = "))
+            setup_command = json.loads(setup_line.removeprefix("script = "))
+            subprocess.run(["zsh", "-lc", setup_command], cwd=repo_path, check=True)
+
+            self.assertFalse((repo_path / ".native-binding-install-ran").exists())
+
+    def test_node_frontend_setup_reinstalls_when_current_platform_optional_binding_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            platform_name = subprocess.run(
+                ["node", "-p", "process.platform"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            architecture = subprocess.run(
+                ["node", "-p", "process.arch"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            (repo_path / "node_modules").mkdir()
+            (repo_path / "package-lock.json").write_text(
+                json.dumps(
+                    {
+                        "lockfileVersion": 3,
+                        "packages": {
+                            "": {"name": "demo-frontend"},
+                            "node_modules/demo-native-binding": {
+                                "optional": True,
+                                "os": [platform_name],
+                                "cpu": [architecture],
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            environment = lib._render_node_frontend_environment(
+                "demo-frontend",
+                None,
+                "touch .native-binding-install-ran",
+                "true",
+                "touch .native-binding-install-ran",
+            )
+            setup_line = next(line for line in environment.splitlines() if line.startswith("script = "))
+            setup_command = json.loads(setup_line.removeprefix("script = "))
+            subprocess.run(["zsh", "-lc", setup_command], cwd=repo_path, check=True)
+
+            self.assertTrue((repo_path / ".native-binding-install-ran").exists())
+
+    def test_missing_node_platform_optional_dependencies_checks_current_platform_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            (repo_path / "node_modules" / "demo-darwin-arm64").mkdir(parents=True)
+            (repo_path / "package-lock.json").write_text(
+                json.dumps(
+                    {
+                        "lockfileVersion": 3,
+                        "packages": {
+                            "": {"name": "demo-frontend"},
+                            "node_modules/demo-darwin-arm64": {
+                                "optional": True,
+                                "os": ["darwin"],
+                                "cpu": ["arm64"],
+                            },
+                            "node_modules/demo-darwin-x64": {
+                                "optional": True,
+                                "os": ["darwin"],
+                                "cpu": ["x64"],
+                            },
+                            "node_modules/demo-generic-optional": {"optional": True},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                lib._missing_node_platform_optional_dependencies(repo_path, "darwin", "arm64"),
+                [],
+            )
+            self.assertEqual(
+                lib._missing_node_platform_optional_dependencies(repo_path, "darwin", "x64"),
+                ["node_modules/demo-darwin-x64"],
+            )
+
+    def test_prepare_repo_runtime_repairs_missing_current_platform_optional_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source_repo = root / "source"
+            task_repo = root / "task-root" / "demo-frontend__demo"
+            source_repo.mkdir(parents=True)
+            task_repo.mkdir(parents=True)
+            (task_repo / "package.json").write_text(
+                '{"name":"demo-frontend","scripts":{"start":"vite --host 0.0.0.0"},"volta":{"node":"24.14.0"}}',
+                encoding="utf-8",
+            )
+            (task_repo / "node_modules").mkdir()
+            (task_repo / "package-lock.json").write_text(
+                json.dumps(
+                    {
+                        "lockfileVersion": 3,
+                        "packages": {
+                            "": {"name": "demo-frontend"},
+                            "node_modules/demo-native-binding": {
+                                "optional": True,
+                                "os": ["darwin"],
+                                "cpu": ["arm64"],
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch.object(lib, "_node_platform_tag", return_value=("darwin", "arm64")),
+                mock.patch.object(lib, "run_shell") as run_shell_mock,
+                mock.patch.object(lib, "_missing_node_platform_optional_dependencies", side_effect=[
+                    ["node_modules/demo-native-binding"],
+                    [],
+                ]),
+                mock.patch("subprocess.run") as subprocess_run_mock,
+            ):
+                subprocess_run_mock.return_value.stdout = ""
+                summary = lib.prepare_repo_runtime(
+                    {
+                        "key": "demo-frontend",
+                        "path": str(source_repo),
+                        "runtime": {
+                            "mode": "patch-node-frontend-environment",
+                            "task_env_file": ".codex/task-runtime.env",
+                            "task_port_key": "TASK_WEB_PORT",
+                            "app_port_start": 3209,
+                            "app_port_end": 3249,
+                            "environment_toml": ".codex/environments/environment.toml",
+                            "install_commands": ["npm install"],
+                            "start_commands": ["npm run start"],
+                        },
+                    },
+                    task_repo,
+                    dry_run=False,
+                )
+
+            run_shell_mock.assert_called_once()
+            self.assertIn("npm ci --include=optional", run_shell_mock.call_args.args[0])
+            self.assertTrue(any("本地环境修复" in note for note in summary["notes"]))
+            self.assertEqual(summary["warnings"], [])
+
+    def test_prepare_repo_runtime_does_not_install_when_node_modules_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source_repo = root / "source"
+            task_repo = root / "task-root" / "demo-frontend__demo"
+            source_repo.mkdir(parents=True)
+            task_repo.mkdir(parents=True)
+            (task_repo / "package.json").write_text(
+                '{"name":"demo-frontend","scripts":{"start":"vite --host 0.0.0.0"}}',
+                encoding="utf-8",
+            )
+            (task_repo / "package-lock.json").write_text(
+                json.dumps({"lockfileVersion": 3, "packages": {"": {"name": "demo-frontend"}}}),
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(lib, "run_shell") as run_shell_mock:
+                lib.prepare_repo_runtime(
+                    {
+                        "key": "demo-frontend",
+                        "path": str(source_repo),
+                        "runtime": {
+                            "mode": "patch-node-frontend-environment",
+                            "task_env_file": ".codex/task-runtime.env",
+                            "task_port_key": "TASK_WEB_PORT",
+                            "app_port_start": 3209,
+                            "app_port_end": 3249,
+                            "environment_toml": ".codex/environments/environment.toml",
+                            "install_commands": ["npm install"],
+                            "start_commands": ["npm run start"],
+                        },
+                    },
+                    task_repo,
+                    dry_run=False,
+                )
+
+            run_shell_mock.assert_not_called()
+
     def test_prepare_repo_runtime_replaces_zero_byte_local_file_from_main(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -290,6 +524,8 @@ class FrontendLocalBackendPatchTests(unittest.TestCase):
             self.assertTrue(environment_path.exists())
             content = environment_path.read_text(encoding="utf-8")
             self.assertIn('name = "demo-frontend"', content)
+            self.assertIn("if [ ! -d node_modules ]; then npm install;", content)
+            self.assertIn("npm ci --include=optional", content)
             self.assertIn("npm run dev -- --port 3110 --strictPort", content)
             self.assertEqual(summary["generated_files"], [".codex/environments/environment.toml"])
 
@@ -771,6 +1007,107 @@ class PublishTargetTests(unittest.TestCase):
         self.assertEqual(
             lib.resolve_requested_repo_keys_or_aliases(["批发手机前端"], bound_repo_keys, repo_cfg_by_key),
             ["senguo-pf-easy-mobile"],
+        )
+
+    def test_build_pr_default_title_marks_backend_pr_when_task_has_frontend(self) -> None:
+        task_meta = {
+            "task_id": "2026-08-20-采购优化",
+            "bbs_id": "52300",
+            "current_task_name": "旧任务名",
+            "current_stage": {"task_name": "采购优化", "bbs_id": "53850"},
+        }
+        repo_cfg_by_key = {
+            "producer-backend": {
+                "key": "producer-backend",
+                "notes": "产地通后端",
+                "runtime": {"mode": "shared-backend-app"},
+            },
+            "pf-mproducer-supplier": {
+                "key": "pf-mproducer-supplier",
+                "notes": "产地通手机前端",
+                "runtime": {"mode": "patch-node-frontend-environment"},
+            },
+        }
+
+        self.assertEqual(
+            lib.build_pr_default_title(
+                task_meta,
+                "producer-backend",
+                ["producer-backend", "pf-mproducer-supplier"],
+                repo_cfg_by_key,
+            ),
+            "采购优化（有前端）",
+        )
+
+    def test_build_pr_default_title_marks_frontend_pr_when_task_has_backend(self) -> None:
+        task_meta = {
+            "task_id": "2026-08-20-采购优化",
+            "current_stage": {"task_name": "采购优化", "bbs_id": "53850"},
+        }
+        repo_cfg_by_key = {
+            "producer-backend": {
+                "key": "producer-backend",
+                "notes": "产地通后端",
+                "runtime": {"mode": "shared-backend-app"},
+            },
+            "pf-mproducer-supplier": {
+                "key": "pf-mproducer-supplier",
+                "notes": "产地通手机前端",
+                "runtime": {"mode": "patch-node-frontend-environment"},
+            },
+        }
+
+        self.assertEqual(
+            lib.build_pr_default_title(
+                task_meta,
+                "pf-mproducer-supplier",
+                ["producer-backend", "pf-mproducer-supplier"],
+                repo_cfg_by_key,
+            ),
+            "采购优化（有后端）",
+        )
+
+    def test_build_pr_default_title_omits_optional_bbs_id_and_suffix_when_no_other_side(self) -> None:
+        task_meta = {"task_id": "2026-08-20-采购优化"}
+        repo_cfg_by_key = {
+            "producer-backend": {
+                "key": "producer-backend",
+                "notes": "产地通后端",
+                "runtime": {"mode": "shared-backend-app"},
+            },
+        }
+
+        self.assertEqual(
+            lib.build_pr_default_title(task_meta, "producer-backend", ["producer-backend"], repo_cfg_by_key),
+            "采购优化",
+        )
+
+    def test_build_pr_default_title_does_not_mark_frontend_for_another_frontend_repo(self) -> None:
+        task_meta = {
+            "task_id": "2026-08-20-采购优化",
+            "current_stage": {"task_name": "采购优化", "bbs_id": "#53850"},
+        }
+        repo_cfg_by_key = {
+            "pf-mproducer-supplier": {
+                "key": "pf-mproducer-supplier",
+                "notes": "产地通手机前端",
+                "runtime": {"mode": "patch-node-frontend-environment"},
+            },
+            "pf-producer-supplier": {
+                "key": "pf-producer-supplier",
+                "notes": "产地通 PC 前端",
+                "runtime": {"mode": "patch-node-frontend-environment"},
+            },
+        }
+
+        self.assertEqual(
+            lib.build_pr_default_title(
+                task_meta,
+                "pf-mproducer-supplier",
+                ["pf-mproducer-supplier", "pf-producer-supplier"],
+                repo_cfg_by_key,
+            ),
+            "采购优化",
         )
 
     def test_publish_main_defaults_to_all_bound_repos_when_no_targets(self) -> None:
@@ -1575,6 +1912,8 @@ class NextTaskWorkspaceTests(unittest.TestCase):
                 mock.patch("sys.argv", [
                     "create_task_workspace.py",
                     "批发任务",
+                    "--bbs-id",
+                    "53850",
                     "--repo",
                     "批发后端",
                     "--repo",
@@ -1593,7 +1932,23 @@ class NextTaskWorkspaceTests(unittest.TestCase):
             meta = lib.load_yaml(task_docs_root / "meta.yaml")
             repo_keys = [repo["key"] for repo in meta["repos"]]
             self.assertEqual(repo_keys, ["pf-backend", "senguo-pf-easy-mobile", "senguo-pf-manage-frontend"])
-            self.assertIn("涉及仓库：pf-backend, senguo-pf-easy-mobile, senguo-pf-manage-frontend", (task_docs_root / "plan.md").read_text(encoding="utf-8"))
+            self.assertEqual(meta["bbs_id"], "53850")
+            self.assertEqual(
+                meta["current_stage"],
+                {
+                    "phase": 1,
+                    "task_name": "批发任务",
+                    "status": "方案中",
+                    "resume_status": "方案中",
+                    "plan": "plan.md",
+                    "bbs_id": "53850",
+                },
+            )
+            index_text = (task_docs_root / "index.md").read_text(encoding="utf-8")
+            plan_text = (task_docs_root / "plan.md").read_text(encoding="utf-8")
+            self.assertIn("- 需求编号：#53850", index_text)
+            self.assertIn("需求来源：BBS #53850", plan_text)
+            self.assertIn("涉及仓库：pf-backend, senguo-pf-easy-mobile, senguo-pf-manage-frontend", plan_text)
 
     def test_create_task_workspace_dry_run_does_not_leave_empty_task_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1789,6 +2144,15 @@ class NextTaskWorkspaceTests(unittest.TestCase):
                         "status: 测试中",
                         "resume_status: 测试中",
                         "coding_allowed: false",
+                        'bbs_id: "53850"',
+                        "phase: 1",
+                        "current_stage:",
+                        "  phase: 1",
+                        "  task_name: 部门转货",
+                        "  status: 测试中",
+                        "  resume_status: 测试中",
+                        "  plan: plan.md",
+                        '  bbs_id: "53850"',
                         "repos:",
                         "- key: producer-backend",
                         "  repo_dir: producer-backend__部门转货",
@@ -1839,6 +2203,8 @@ class NextTaskWorkspaceTests(unittest.TestCase):
                     "next_task_workspace.py",
                     task_id,
                     "加工单扫码支持托盘码二期",
+                    "--bbs-id",
+                    "53999",
                     "--config-root",
                     str(config_root),
                 ]),
@@ -1852,22 +2218,48 @@ class NextTaskWorkspaceTests(unittest.TestCase):
             self.assertEqual(meta["phase"], 2)
             self.assertEqual(meta["current_task_name"], "加工单扫码支持托盘码二期")
             self.assertEqual(meta["active_plan"], "plan-加工单扫码支持托盘码二期.md")
+            self.assertEqual(meta["bbs_id"], "53999")
+            self.assertEqual(
+                meta["current_stage"],
+                {
+                    "phase": 2,
+                    "task_name": "加工单扫码支持托盘码二期",
+                    "status": "方案中",
+                    "resume_status": "方案中",
+                    "plan": "plan-加工单扫码支持托盘码二期.md",
+                    "repos": [
+                        {"key": "producer-backend", "branch": "加工单扫码支持托盘码二期"},
+                        {"key": "pf-mproducer-supplier", "branch": "加工单扫码支持托盘码二期"},
+                    ],
+                    "bbs_id": "53999",
+                },
+            )
             self.assertNotIn("active_decision_log", meta)
             self.assertEqual(meta["repos"][0]["branch"], "加工单扫码支持托盘码二期")
             self.assertEqual(meta["previous_phases"][0]["plan"], "plan.md")
             self.assertEqual(meta["previous_phases"][0]["status"], "已完成")
+            self.assertEqual(meta["previous_phases"][0]["bbs_id"], "53850")
             self.assertEqual(meta["previous_phases"][0]["decision_log"], "decision-log.md")
+            self.assertEqual(
+                meta["previous_phases"][0]["repos"],
+                [
+                    {"key": "producer-backend", "branch": "一期分支"},
+                    {"key": "pf-mproducer-supplier", "branch": "一期分支"},
+                ],
+            )
 
             new_plan_path = task_docs_root / "plan-加工单扫码支持托盘码二期.md"
             self.assertTrue(new_plan_path.exists())
             new_plan_text = new_plan_path.read_text(encoding="utf-8")
             self.assertIn("# 加工单扫码支持托盘码二期", new_plan_text)
+            self.assertIn("- 需求编号：#53999", new_plan_text)
             self.assertIn("## 核心决策与原因", new_plan_text)
             new_decision_log_path = task_docs_root / "decision-log-加工单扫码支持托盘码二期.md"
             self.assertFalse(new_decision_log_path.exists())
 
             index_text = (task_docs_root / "index.md").read_text(encoding="utf-8")
             self.assertIn("- 当前状态：方案中", index_text)
+            self.assertIn("- 需求编号：#53999", index_text)
             self.assertIn("- 当前阶段任务：加工单扫码支持托盘码二期", index_text)
             self.assertIn("- 前置阶段任务：部门转货", index_text)
             self.assertIn("- 当前方案：./plan-加工单扫码支持托盘码二期.md", index_text)
@@ -1981,6 +2373,13 @@ class NextTaskWorkspaceTests(unittest.TestCase):
             self.assertNotIn("active_decision_log", meta)
             self.assertEqual(meta["repos"][0]["branch"], "一期后端分支")
             self.assertEqual(meta["repos"][1]["branch"], "先建优化任务-加工一个托盘码一行")
+            self.assertEqual(
+                meta["previous_phases"][0]["repos"],
+                [
+                    {"key": "producer-backend", "branch": "一期后端分支"},
+                    {"key": "pf-mproducer-supplier", "branch": "一期手机分支"},
+                ],
+            )
 
             new_plan_path = task_docs_root / "plan-先建优化任务-加工一个托盘码一行.md"
             self.assertTrue(new_plan_path.exists())
@@ -2099,6 +2498,300 @@ class NextTaskWorkspaceTests(unittest.TestCase):
                 ["git", "-C", str(repo_path), "checkout", "-B", "二期新任务", "origin/master"],
                 commands,
             )
+
+    def test_switch_task_stage_switches_to_recorded_local_branch_and_updates_meta(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir) / "workspace"
+            docs_root = workspace_root / "_docs"
+            tasks_root = workspace_root / "_tasks"
+            config_root = workspace_root / "config"
+            task_id = "2026-06-24-阶段切换"
+            task_docs_root = docs_root / task_id
+            task_code_root = tasks_root / task_id
+            repo_path = task_code_root / "producer-backend__阶段切换"
+            task_docs_root.mkdir(parents=True)
+            repo_path.mkdir(parents=True)
+            config_root.mkdir(parents=True)
+
+            (config_root / "workspace.yaml").write_text(
+                "\n".join(
+                    [
+                        f'workspace_root: "{workspace_root}"',
+                        f'tasks_root: "{tasks_root}"',
+                        f'docs_root: "{docs_root}"',
+                        "documents:",
+                        '  index: "index.md"',
+                        '  plan: "plan.md"',
+                        '  progress: "progress.md"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (task_docs_root / "meta.yaml").write_text(
+                "\n".join(
+                    [
+                        f"task_id: {task_id}",
+                        "status: 方案中",
+                        "resume_status: 方案中",
+                        "coding_allowed: false",
+                        "phase: 2",
+                        "current_task_name: 二期任务",
+                        "active_plan: plan-二期任务.md",
+                        "active_decision_log: decision-log-二期任务.md",
+                        "current_stage:",
+                        "  phase: 2",
+                        "  task_name: 二期任务",
+                        "  status: 方案中",
+                        "  resume_status: 方案中",
+                        "  plan: plan-二期任务.md",
+                        "  decision_log: decision-log-二期任务.md",
+                        "repos:",
+                        "- key: producer-backend",
+                        "  repo_dir: producer-backend__阶段切换",
+                        "  branch: 二期任务",
+                        "previous_phases:",
+                        "- phase: 1",
+                        "  task_name: 一期任务",
+                        "  status: 已完成",
+                        "  resume_status: 已完成",
+                        "  plan: plan.md",
+                        "  decision_log: decision-log.md",
+                        "  repos:",
+                        "  - key: producer-backend",
+                        "    branch: 一期任务",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (task_docs_root / "index.md").write_text("# 阶段切换\n", encoding="utf-8")
+            (task_docs_root / "progress.md").write_text("# 任务进度\n\n## 变更记录\n", encoding="utf-8")
+
+            subprocess.run(["git", "-C", str(repo_path), "init"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["git", "-C", str(repo_path), "config", "user.email", "codex@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo_path), "config", "user.name", "Codex"], check=True)
+            subprocess.run(["git", "-C", str(repo_path), "checkout", "-b", "二期任务"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["git", "-C", str(repo_path), "commit", "--allow-empty", "-m", "init"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["git", "-C", str(repo_path), "checkout", "-b", "一期任务"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["git", "-C", str(repo_path), "checkout", "二期任务"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            with mock.patch("sys.argv", [
+                "switch_task_stage.py",
+                task_id,
+                "1",
+                "--config-root",
+                str(config_root),
+            ]):
+                self.assertEqual(stage_script.main(), 0)
+
+            self.assertEqual(lib.run_git(repo_path, "branch", "--show-current"), "一期任务")
+            meta = lib.load_yaml(task_docs_root / "meta.yaml")
+            self.assertEqual(meta["phase"], 1)
+            self.assertEqual(meta["current_task_name"], "一期任务")
+            self.assertEqual(meta["active_plan"], "plan.md")
+            self.assertEqual(meta["active_decision_log"], "decision-log.md")
+            self.assertEqual(meta["repos"][0]["branch"], "一期任务")
+            self.assertEqual(meta["current_stage"]["repos"], [{"key": "producer-backend", "branch": "一期任务"}])
+            self.assertEqual(meta["current_stage"]["decision_log"], "decision-log.md")
+            self.assertEqual(meta["previous_phases"][0]["phase"], 2)
+            self.assertEqual(meta["previous_phases"][0]["decision_log"], "decision-log-二期任务.md")
+            self.assertEqual(meta["previous_phases"][0]["repos"], [{"key": "producer-backend", "branch": "二期任务"}])
+            self.assertIn("- 当前阶段任务：一期任务", (task_docs_root / "index.md").read_text(encoding="utf-8"))
+
+    def test_switch_task_stage_blocks_when_target_stage_does_not_cover_all_bound_repos(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir) / "workspace"
+            docs_root = workspace_root / "_docs"
+            tasks_root = workspace_root / "_tasks"
+            config_root = workspace_root / "config"
+            task_id = "2026-06-24-阶段切换"
+            task_docs_root = docs_root / task_id
+            task_docs_root.mkdir(parents=True)
+            config_root.mkdir(parents=True)
+
+            (config_root / "workspace.yaml").write_text(
+                f'workspace_root: "{workspace_root}"\n'
+                f'tasks_root: "{tasks_root}"\n'
+                f'docs_root: "{docs_root}"\n',
+                encoding="utf-8",
+            )
+            meta_text = "\n".join(
+                [
+                    f"task_id: {task_id}",
+                    "status: 方案中",
+                    "resume_status: 方案中",
+                    "coding_allowed: false",
+                    "phase: 2",
+                    "current_task_name: 二期任务",
+                    "active_plan: plan-二期任务.md",
+                    "repos:",
+                    "- key: producer-backend",
+                    "  repo_dir: producer-backend__阶段切换",
+                    "  branch: 二期任务",
+                    "- key: pf-mproducer-supplier",
+                    "  repo_dir: pf-mproducer-supplier__阶段切换",
+                    "  branch: 二期任务",
+                    "previous_phases:",
+                    "- phase: 1",
+                    "  task_name: 一期任务",
+                    "  status: 已完成",
+                    "  plan: plan.md",
+                    "  repos:",
+                    "  - key: producer-backend",
+                    "    branch: 一期任务",
+                    "",
+                ]
+            )
+            (task_docs_root / "meta.yaml").write_text(meta_text, encoding="utf-8")
+
+            with mock.patch("sys.argv", [
+                "switch_task_stage.py",
+                task_id,
+                "1",
+                "--config-root",
+                str(config_root),
+            ]):
+                self.assertEqual(stage_script.main(), 2)
+
+            self.assertEqual((task_docs_root / "meta.yaml").read_text(encoding="utf-8"), meta_text)
+
+    def test_switch_task_stage_blocks_when_target_local_branch_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir) / "workspace"
+            docs_root = workspace_root / "_docs"
+            tasks_root = workspace_root / "_tasks"
+            config_root = workspace_root / "config"
+            task_id = "2026-06-24-阶段切换"
+            task_docs_root = docs_root / task_id
+            repo_path = tasks_root / task_id / "producer-backend__阶段切换"
+            task_docs_root.mkdir(parents=True)
+            repo_path.mkdir(parents=True)
+            config_root.mkdir(parents=True)
+
+            (config_root / "workspace.yaml").write_text(
+                f'workspace_root: "{workspace_root}"\n'
+                f'tasks_root: "{tasks_root}"\n'
+                f'docs_root: "{docs_root}"\n',
+                encoding="utf-8",
+            )
+            meta_text = "\n".join(
+                [
+                    f"task_id: {task_id}",
+                    "status: 方案中",
+                    "resume_status: 方案中",
+                    "coding_allowed: false",
+                    "phase: 2",
+                    "current_task_name: 二期任务",
+                    "active_plan: plan-二期任务.md",
+                    "repos:",
+                    "- key: producer-backend",
+                    "  repo_dir: producer-backend__阶段切换",
+                    "  branch: 二期任务",
+                    "previous_phases:",
+                    "- phase: 1",
+                    "  task_name: 一期任务",
+                    "  status: 已完成",
+                    "  plan: plan.md",
+                    "  repos:",
+                    "  - key: producer-backend",
+                    "    branch: 一期任务",
+                    "",
+                ]
+            )
+            (task_docs_root / "meta.yaml").write_text(meta_text, encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo_path), "init"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["git", "-C", str(repo_path), "checkout", "-b", "二期任务"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            with mock.patch("sys.argv", [
+                "switch_task_stage.py",
+                task_id,
+                "1",
+                "--config-root",
+                str(config_root),
+            ]):
+                self.assertEqual(stage_script.main(), 2)
+
+            self.assertEqual(lib.run_git(repo_path, "branch", "--show-current"), "二期任务")
+            self.assertEqual((task_docs_root / "meta.yaml").read_text(encoding="utf-8"), meta_text)
+
+    def test_switch_task_stage_reports_partial_checkout_failure_without_writing_meta(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir) / "workspace"
+            docs_root = workspace_root / "_docs"
+            tasks_root = workspace_root / "_tasks"
+            config_root = workspace_root / "config"
+            task_id = "2026-06-24-阶段切换"
+            task_docs_root = docs_root / task_id
+            backend_repo = tasks_root / task_id / "producer-backend__阶段切换"
+            mobile_repo = tasks_root / task_id / "pf-mproducer-supplier__阶段切换"
+            task_docs_root.mkdir(parents=True)
+            backend_repo.mkdir(parents=True)
+            mobile_repo.mkdir(parents=True)
+            config_root.mkdir(parents=True)
+
+            (config_root / "workspace.yaml").write_text(
+                f'workspace_root: "{workspace_root}"\n'
+                f'tasks_root: "{tasks_root}"\n'
+                f'docs_root: "{docs_root}"\n',
+                encoding="utf-8",
+            )
+            meta_text = "\n".join(
+                [
+                    f"task_id: {task_id}",
+                    "status: 方案中",
+                    "resume_status: 方案中",
+                    "coding_allowed: false",
+                    "phase: 2",
+                    "current_task_name: 二期任务",
+                    "active_plan: plan-二期任务.md",
+                    "repos:",
+                    "- key: producer-backend",
+                    "  repo_dir: producer-backend__阶段切换",
+                    "  branch: 二期任务",
+                    "- key: pf-mproducer-supplier",
+                    "  repo_dir: pf-mproducer-supplier__阶段切换",
+                    "  branch: 二期任务",
+                    "previous_phases:",
+                    "- phase: 1",
+                    "  task_name: 一期任务",
+                    "  status: 已完成",
+                    "  plan: plan.md",
+                    "  repos:",
+                    "  - key: producer-backend",
+                    "    branch: 一期任务",
+                    "  - key: pf-mproducer-supplier",
+                    "    branch: 一期任务",
+                    "",
+                ]
+            )
+            (task_docs_root / "meta.yaml").write_text(meta_text, encoding="utf-8")
+
+            with (
+                mock.patch.object(stage_script, "validate_repo_state", return_value=[]),
+                mock.patch.object(stage_script, "_local_branch_exists", return_value=True),
+                mock.patch.object(
+                    stage_script,
+                    "run",
+                    side_effect=[
+                        None,
+                        subprocess.CalledProcessError(
+                            1,
+                            ["git", "-C", str(mobile_repo), "checkout", "一期任务"],
+                        ),
+                    ],
+                ),
+                mock.patch("sys.argv", [
+                    "switch_task_stage.py",
+                    task_id,
+                    "1",
+                    "--config-root",
+                    str(config_root),
+                ]),
+            ):
+                self.assertEqual(stage_script.main(), 3)
+
+            self.assertEqual((task_docs_root / "meta.yaml").read_text(encoding="utf-8"), meta_text)
 
     def test_next_task_workspace_accepts_human_target_alias(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2303,6 +2996,15 @@ class CompleteCleanupRuntimeTests(unittest.TestCase):
                         "status: 测试中",
                         "resume_status: 测试中",
                         "coding_allowed: true",
+                        'bbs_id: "53850"',
+                        "phase: 1",
+                        "current_stage:",
+                        "  phase: 1",
+                        "  task_name: 部门转货",
+                        "  status: 测试中",
+                        "  resume_status: 测试中",
+                        "  plan: plan.md",
+                        '  bbs_id: "53850"',
                         "repos:",
                         "- key: producer-backend",
                         "  repo_dir: producer-backend__部门转货",
@@ -2329,6 +3031,12 @@ class CompleteCleanupRuntimeTests(unittest.TestCase):
 
             stop_runtime_mock.assert_called_once()
             self.assertEqual(stop_runtime_mock.call_args.args[0]["runtime"]["mode"], "shared-backend-app")
+            meta = lib.load_yaml(task_docs_root / "meta.yaml")
+            self.assertEqual(meta["status"], "已完成")
+            self.assertEqual(meta["resume_status"], "已完成")
+            self.assertEqual(meta["current_stage"]["status"], "已完成")
+            self.assertEqual(meta["current_stage"]["resume_status"], "已完成")
+            self.assertEqual(meta["current_stage"]["bbs_id"], "53850")
 
     def test_cleanup_task_workspace_stops_runtime_before_removing_task_code(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
