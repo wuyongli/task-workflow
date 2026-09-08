@@ -1,6 +1,6 @@
 ---
 name: task-workflow
-description: "Use when the user works with /Users/wuyongli/Documents/sg-project/_workspace task workspaces: create/load/continue tasks, update progress, review/codeview changes, create merge requests, consolidate tests, publish, sync remote master, delete local develop branches, switch local MySQL data directory, inspect task dev URLs or ports, open next-stage work, switch task stages, complete, or clean up."
+description: "用于 /Users/wuyongli/Documents/sg-project/_workspace 任务工作区相关场景：创建/恢复/继续任务、更新进度、代码审查/codeview、创建合并请求、收敛测试代码、发布、同步远程主线、删除本地 develop 分支、切换本地 MySQL 数据目录、查看任务开发地址或端口、开启下一阶段、切换阶段、完成或清理任务。"
 ---
 
 # 任务工作流
@@ -167,6 +167,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_ru
 - `方案中`
 - `开发中`
 - `测试中`
+- `暂停中`
 - `已完成`
 
 `plan.md` 默认先用种子版结构；任务进入深入方案阶段后再扩为正式版。涉及后端表 / 字段 / 索引调整时，数据变更与上线方案优先沿用 `product-copilot-rules` 定义的统一格式。
@@ -188,6 +189,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_ru
 - 默认不指定目标时，发布当前任务下全部绑定仓库
 - 发布目标按当前任务绑定仓库动态识别，不依赖固定中文名称
 - 多目标发布默认并行；单个目标失败不阻断其它目标
+- 配置为 `patch-node-frontend-environment` 的前端，执行 `sg publish local` 前只自动准备当前 Node 平台缺失的原生 optional 依赖；不要执行完整 runtime prepare，避免改写端口、代理或 `environment.toml`
 - 不能只看退出码；必须看终端明确成功信号和错误信息
 - `sg publish` 停在 `develop` 合并冲突时，保留冲突现场并优先在 `develop` 自动解决明确冲突
 - 从 `develop` 重试发布成功后，必须切回 `meta.yaml` 记录的任务分支
@@ -226,8 +228,10 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_ru
 - 用户显式输入 `/task-workflow pr ...` 或明确要求为指定任务仓库创建合并请求时，视为已授权创建 PR；不把“查看 PR”“检查 PR 状态”视为创建授权
 - 默认不指定目标时，为当前任务下全部绑定仓库创建 PR；指定目标时，目标表达方式与 publish / sync 相同
 - 目标仓库按当前任务绑定仓库动态识别；多目标默认并行，单个仓库失败不阻断其它仓库
+- 创建前要在候选绑定仓库基础上多做一次实际改动检查：相对远程默认分支没有 diff 的仓库跳过创建，并在结果里说明“无本次 PR 改动”
 - 源分支直接使用 `meta.yaml` 记录的任务分支；目标分支使用各仓库远程默认分支，用户明确指定目标分支时才覆盖
-- 未指定 `--title` 时，PR 标题默认按 `任务名（是否有前端/后端）` 生成；日期和 BBS 编号由 `sg pr create` 按创建当天和 `--task-link` 自动拼接，task-workflow 不重复加入
+- 未指定 `--title` 时，PR 标题默认按 `任务名（是否有前端/后端）` 生成；括号只基于实际有 diff、准备创建 PR 的仓库集合判断，不基于任务曾经绑定过的全部仓库判断
+- 日期和 BBS 编号由 `sg pr create` 按创建当天和 `--task-link` 自动拼接，task-workflow 不重复加入
 - 创建前先确认仓库存在、当前分支与 `meta.yaml` 记录分支一致、工作区干净，并用 `sg pr status` 检查当前分支没有已存在的开放 PR
 - 源分支尚未推送时，允许先执行普通 `git push -u origin <当前分支>`；不自动提交、不 force-push、不改写历史
 - 默认创建 WIP PR：`sg pr create --target <远程默认分支> --wip`
@@ -305,7 +309,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_mys
 执行规则：
 - 用户说“代码审查”“检查代码改动”“收敛测试代码”“一次性测试可以去掉”时，按 `review` 处理
 - 先恢复任务上下文，再基于真实 diff、真实项目规则和真实代码路径审查
-- 如果 review 目标包含前端，跑 Vitest / `npm run typecheck` 前必须先执行 `prepare_task_runtime.py <task-id> --repo <目标前端>`；不能直接把 `@rolldown/binding-darwin-*`、`@typescript/typescript-darwin-*` 缺失列为验证阻断
+- 如果 review 目标是配置为 `patch-node-frontend-environment` 的前端，跑 Vitest / `npm run typecheck` / `npm run build:*` 前先自动执行 `prepare_task_runtime.py <task-id> --repo <目标前端>`；小程序等未配置该 runtime 的前端不强制 prepare
 - 默认做三轮：通用 code review、对抗式审查、测试代码收敛审查
 - 默认只输出结论，不改代码；用户明确授权“明确问题直接修”“测试代码可以收敛/删除”时才修改
 - 详细流程和判断标准见 [review.md](references/review.md)
@@ -343,7 +347,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_mys
 
 ### 前端验证环境
 
-前端 Vitest / `npm run typecheck` 前，先按 [runtime.md](references/runtime.md) 准备项目声明的 Node 版本和当前平台原生 optional 依赖。`@rolldown/binding-darwin-*`、`@typescript/typescript-darwin-*` 缺失默认按本地设备 / Node 架构问题处理，不当成业务代码失败。
+配置为 `patch-node-frontend-environment` 的前端，在 Vitest / `npm run typecheck` / `npm run build:*` 前，先按 [runtime.md](references/runtime.md) 准备项目声明的 Node 版本和当前平台原生 optional 依赖；`sg publish local` 前只做原生 optional 依赖准备，不做完整 runtime prepare。小程序 / 微信开发者工具类前端按项目现有编译、预览或上传流程验证，不因为未执行 runtime prepare 就阻断 review。`@rolldown/binding-darwin-*`、`@typescript/typescript-darwin-*` 缺失默认按本地设备 / Node 架构问题处理，不当成业务代码失败。
 
 ### 11. Complete
 
@@ -379,13 +383,14 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/complete_task_w
 
 关键边界：
 - `next` 是在原工作空间内开启新的阶段任务，不新建任务工作空间
-- 用户明确调用 `next` 时，视为用户确认上一阶段已经完成或已上线；通常不需要先单独运行 `complete`
-- 允许从 `开发中` / `测试中` / `已完成` 进入下一阶段，不允许从 `方案中` 直接切阶段
+- 用户明确调用 `next` 时，表示先暂停当前阶段并开启下一阶段；不等于确认上一阶段已经完成或已上线
+- 允许从 `方案中` / `开发中` / `测试中` / `暂停中` / `已完成` 开启下一阶段
+- 当前阶段如果已是 `已完成`，历史阶段保留为 `已完成`；否则历史阶段记录为 `暂停中`，并用 `resume_status` 保存原状态
 - 新阶段分支默认基于远程 `master` 最新代码创建，不承接当前本地任务分支
 - `--bbs-id` 是选填；新阶段可以指定新的 `bbs_id`，如果不指定，不默认沿用上一阶段的 `bbs_id`
 - 阶段化和子任务拆分按用户产品口径判断，不按前端/后端/PC/手机端技术面机械拆分
 - 没有子任务时，当前阶段 plan 是当前阶段唯一方案来源；有子任务时，子文档才承接详细方案
-- 开启新阶段后，默认把当前阶段状态重置为 `方案中`，上一阶段记录为 `已完成`
+- 开启新阶段后，当前阶段状态为 `方案中`、`coding_allowed: false`，等待本阶段方案确认和明确开发指令
 
 推荐命令：
 
@@ -415,7 +420,8 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_works
 - 目标阶段必须已经记录全部绑定仓库分支；缺少任一绑定仓库分支时直接阻断
 - 目标本地分支不存在时直接阻断，不基于远程分支、`master` 或阶段名重建
 - 如果多仓 checkout 中途失败，停止写入 `meta.yaml` 和文档，明确提示已切/未切仓库，让用户确认后再恢复一致状态
-- 切换成功后，原当前阶段会进入 `previous_phases`，目标阶段成为当前阶段
+- 切换成功后，原当前阶段会进入 `previous_phases`；未完成的原当前阶段记录为 `暂停中`，并保留 `resume_status`
+- 如果目标阶段记录为 `暂停中`，切入时恢复到 `resume_status`，例如恢复为 `方案中` / `开发中` / `测试中`
 
 推荐命令：
 
@@ -535,8 +541,10 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/serve_task_dev_
 - 当前识别到的任务、目标仓库和 review 基线
 - 是否发现并应用项目级 review 规则
 - 按 `阻塞问题 / 明确缺陷`、`非阻塞风险`、`代码质量优化`、`测试代码收敛`、`验证建议` 分层输出
+- 先输出 `审查总览：🔴 阻塞`、`审查总览：🟡 有注意项` 或 `审查总览：🟢 完全通过`；绿色只表示完全没有问题或验证已通过，有建议/风险/未验证项时必须用黄色
+- 各层级标题使用聚合状态点，每条明细也单独使用红 / 黄 / 绿状态点标记
 - 未发现阻塞问题不等于没有优化空间；不要把“未发现阻塞问题”简写成“没有问题”
-- 没有内容的层级可以用一行 `未发现` 收起，但不能省略代码质量优化和测试收敛 pass
+- 没有内容的层级可以用一行 `🟢 未发现` 收起，但不能省略代码质量优化和测试收敛 pass
 - findings 按严重程度排序，包含文件/行号、问题、影响和建议
 - 是否阻塞上线或进入发布
 

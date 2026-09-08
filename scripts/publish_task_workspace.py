@@ -15,11 +15,13 @@ from task_workflow_lib import (
     classify_repo_publish_kind,
     load_task_meta,
     load_yaml,
+    prepare_node_frontend_native_optional_runtime,
     read_current_branch,
     resolve_node_version_for_repo,
     resolve_publish_command,
     resolve_requested_repo_keys,
     resolve_repo_path,
+    uses_patch_node_frontend_runtime,
 )
 
 
@@ -128,6 +130,77 @@ def build_publish_execution_command(command: list[str], node_version: str | None
     return ["zsh", "-lc", shell_command]
 
 
+def should_prepare_frontend_publish_runtime(repo_cfg: dict[str, object], command: list[str]) -> bool:
+    return command[:3] == ["sg", "publish", "local"] and uses_patch_node_frontend_runtime(repo_cfg)
+
+
+def read_package_manifest_diff(repo_path: Path) -> set[str]:
+    diff_text = read_git_text(repo_path, "diff", "--name-only", "--", "package.json", "package-lock.json")
+    return {line.strip() for line in diff_text.splitlines() if line.strip()}
+
+
+def prepare_publish_runtime(job: dict[str, object]) -> dict[str, object]:
+    repo_cfg = job.get("repo_cfg")
+    command = list(job["command"])
+    repo_path = Path(str(job["repo_path"]))
+    if not isinstance(repo_cfg, dict) or not should_prepare_frontend_publish_runtime(repo_cfg, command):
+        return {"skipped": True, "notes": [], "warnings": []}
+
+    before_manifest_diff = read_package_manifest_diff(repo_path)
+    summary = prepare_node_frontend_native_optional_runtime(repo_cfg, repo_path, False)
+    after_manifest_diff = read_package_manifest_diff(repo_path)
+    introduced_manifest_diff = sorted(after_manifest_diff - before_manifest_diff)
+    notes = list(summary.get("notes") or [])
+    warnings = list(summary.get("warnings") or [])
+    if introduced_manifest_diff:
+        warnings.append(
+            "前端发布前的本地依赖修复导致 package.json/package-lock.json 出现新变更，"
+            "这属于异常；已停止发布该仓库："
+            + ", ".join(introduced_manifest_diff)
+        )
+
+    return {
+        "skipped": False,
+        "ok": not introduced_manifest_diff and not bool(summary.get("blocking")),
+        "notes": notes,
+        "warnings": warnings,
+    }
+
+
+def failed_publish_job_result(
+    job: dict[str, object],
+    repo_path: Path,
+    execution_command: list[str],
+    error_message: str,
+    runtime_prepare: dict[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "repo_key": job["repo_key"],
+        "repo_path": str(repo_path),
+        "returncode": 1,
+        "stdout": "",
+        "stderr": "",
+        "status": "failed",
+        "error_message": error_message,
+        "log_status": "",
+        "execution_command": execution_command,
+        "repo_state": {},
+        "restore_result": {},
+        "runtime_prepare": runtime_prepare or {},
+    }
+
+
+def print_runtime_prepare_summary(runtime_prepare: object) -> None:
+    if not isinstance(runtime_prepare, dict) or runtime_prepare.get("skipped"):
+        return
+    notes = [str(item) for item in runtime_prepare.get("notes") or []]
+    warnings = [str(item) for item in runtime_prepare.get("warnings") or []]
+    if notes:
+        print(f"  native optional prepare: {'; '.join(notes)}")
+    if warnings:
+        print(f"  native optional prepare warnings: {'; '.join(warnings)}")
+
+
 def read_git_text(repo_path: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", "-C", str(repo_path), *args],
@@ -214,6 +287,26 @@ def run_publish_job(job: dict[str, object]) -> dict[str, object]:
     command = list(job["command"])
     execution_command = build_publish_execution_command(command, str(job.get("node_version") or "") or None)
     repo_path = Path(str(job["repo_path"]))
+    runtime_prepare: dict[str, object] = {}
+    try:
+        runtime_prepare = prepare_publish_runtime(job)
+    except Exception as exc:
+        return failed_publish_job_result(
+            job,
+            repo_path,
+            execution_command,
+            f"frontend native optional prepare failed before publish: {exc}",
+            runtime_prepare,
+        )
+    if runtime_prepare and runtime_prepare.get("ok") is False:
+        return failed_publish_job_result(
+            job,
+            repo_path,
+            execution_command,
+            "frontend native optional prepare failed before publish",
+            runtime_prepare,
+        )
+
     started_at_ms = int(time.time() * 1000)
     result = subprocess.run(execution_command, cwd=repo_path, text=True, capture_output=True)
     ended_at_ms = int(time.time() * 1000)
@@ -248,6 +341,7 @@ def run_publish_job(job: dict[str, object]) -> dict[str, object]:
         "execution_command": execution_command,
         "repo_state": repo_state,
         "restore_result": restore_result,
+        "runtime_prepare": runtime_prepare,
     }
 
 
@@ -326,10 +420,13 @@ def main() -> int:
         print(f"  command: {' '.join(command)}")
         if node_version:
             print(f"  node: {node_version}")
+        if should_prepare_frontend_publish_runtime(repo_cfg, command):
+            print("  native optional prepare: patch-node-frontend-environment")
         jobs.append(
             {
                 "repo_key": repo_key,
                 "repo_path": repo_path,
+                "repo_cfg": repo_cfg,
                 "command": command,
                 "node_version": node_version,
                 "recorded_branch": recorded_branch,
@@ -357,8 +454,10 @@ def main() -> int:
             stderr = str(result["stderr"] or "")
             status = str(result.get("status") or "")
             error_message = str(result.get("error_message") or "")
+            runtime_prepare = result.get("runtime_prepare")
             if status == "success":
                 print(f"[OK] {repo_key}")
+                print_runtime_prepare_summary(runtime_prepare)
                 restore_result = result.get("restore_result")
                 if isinstance(restore_result, dict) and restore_result.get("ok"):
                     print(f"  restored branch: {restore_result.get('target_branch')}")
@@ -426,6 +525,7 @@ def main() -> int:
                 print(f"[FAILED] {repo_key} (exit={returncode})")
                 if error_message:
                     print(f"  reason: {error_message}")
+                print_runtime_prepare_summary(runtime_prepare)
                 if stdout.strip():
                     print("  stdout:")
                     print(stdout.rstrip())

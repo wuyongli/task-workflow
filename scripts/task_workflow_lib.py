@@ -28,6 +28,13 @@ PUBLISH_KIND_ORDER = {
 }
 
 
+def uses_patch_node_frontend_runtime(repo_cfg: dict[str, Any]) -> bool:
+    runtime = repo_cfg.get("runtime")
+    if not isinstance(runtime, dict):
+        return False
+    return str(runtime.get("mode") or "").strip() == "patch-node-frontend-environment"
+
+
 def sanitize_task_segment(raw_name: str) -> str:
     name = raw_name.strip()
     name = re.sub(r"[\r\n\t]+", " ", name)
@@ -94,13 +101,13 @@ def current_task_title_name(task_meta: dict[str, Any]) -> str:
 def build_pr_default_title(
     task_meta: dict[str, Any],
     target_repo_key: str,
-    bound_repo_keys: list[str],
+    changed_pr_repo_keys: list[str],
     repo_cfg_by_key: dict[str, dict[str, Any]],
 ) -> str:
     title = current_task_title_name(task_meta)
 
     repo_kinds: dict[str, str] = {}
-    for repo_key in bound_repo_keys:
+    for repo_key in changed_pr_repo_keys:
         repo_cfg = repo_cfg_by_key.get(repo_key)
         if repo_cfg is None:
             continue
@@ -271,17 +278,17 @@ def classify_repo_publish_kind(repo_cfg: dict[str, Any]) -> str | None:
     repo_key = str(repo_cfg.get("key") or "")
     repo_path = str(repo_cfg.get("path") or "")
     notes = str(repo_cfg.get("notes") or "")
-    runtime = repo_cfg.get("runtime")
     runtime_mode = ""
+    runtime = repo_cfg.get("runtime")
     if isinstance(runtime, dict):
-        runtime_mode = str(runtime.get("mode") or "")
+        runtime_mode = str(runtime.get("mode") or "").strip()
 
     combined = " ".join([repo_key, repo_path, notes, runtime_mode]).lower()
 
     if runtime_mode == "shared-backend-app" or "后端" in notes or "backend" in combined:
         return "backend"
 
-    if runtime_mode == "patch-node-frontend-environment":
+    if uses_patch_node_frontend_runtime(repo_cfg):
         if "手机" in notes or "mobile" in combined or "mproducer" in combined:
             return "mobile_frontend"
         if "pc" in notes.lower() or "pc" in combined:
@@ -1104,6 +1111,29 @@ def _ensure_node_frontend_native_optional_dependencies(
     return {"notes": notes, "warnings": warnings}
 
 
+def prepare_node_frontend_native_optional_runtime(
+    repo_cfg: dict[str, Any],
+    repo_path: Path,
+    dry_run: bool,
+) -> dict[str, Any]:
+    if not uses_patch_node_frontend_runtime(repo_cfg):
+        return {"skipped": True, "blocking": False, "notes": [], "warnings": []}
+
+    runtime_cfg = repo_cfg.get("runtime") or {}
+    if not isinstance(runtime_cfg, dict):
+        raise ValueError(f"runtime config for repo {repo_cfg.get('key')} must be a mapping")
+
+    node_version = resolve_node_version_for_repo(repo_path)
+    summary = _ensure_node_frontend_native_optional_dependencies(runtime_cfg, repo_path, node_version, dry_run)
+    warnings = list(summary.get("warnings") or [])
+    return {
+        "skipped": False,
+        "blocking": bool(warnings),
+        "notes": list(summary.get("notes") or []),
+        "warnings": warnings,
+    }
+
+
 def _rewrite_frontend_start_command(
     package_json: dict[str, Any],
     start_command: str,
@@ -1517,7 +1547,7 @@ def stop_task_runtime(repo_cfg: dict[str, Any], repo_path: Path, dry_run: bool) 
         raise ValueError(f"runtime config for repo {repo_cfg.get('key')} must be a mapping")
 
     runtime_mode = str(runtime_cfg.get("mode") or "").strip()
-    if runtime_mode == "patch-node-frontend-environment":
+    if uses_patch_node_frontend_runtime(repo_cfg):
         return _stop_node_frontend_runtime(repo_cfg, repo_path, runtime_cfg, dry_run)
     if runtime_mode == "shared-backend-app":
         return _stop_shared_backend_runtime(repo_cfg, repo_path, runtime_cfg, dry_run)
@@ -1625,7 +1655,7 @@ def prepare_repo_runtime(repo_cfg: dict[str, Any], repo_path: Path, dry_run: boo
         generated_files.extend(generated["generated_files"])
         generated_notes.extend(generated["notes"])
         warnings.extend(generated.get("warnings", []))
-    elif runtime_mode == "patch-node-frontend-environment":
+    elif uses_patch_node_frontend_runtime(repo_cfg):
         frontend_runtime = _prepare_node_frontend_runtime(repo_cfg, runtime_cfg, repo_path, dry_run)
         generated_files.extend(frontend_runtime["generated_files"])
         generated_notes.extend(frontend_runtime["notes"])

@@ -25,7 +25,8 @@ from task_workflow_lib import (
 
 DEFAULT_CONFIG_ROOT = Path("/Users/wuyongli/Documents/sg-project/_workspace/config")
 NEXT_BASE_BRANCH = "master"
-NEXT_ALLOWED_STATUSES = ("开发中", "测试中", "已完成")
+NEXT_ALLOWED_STATUSES = ("方案中", "开发中", "测试中", "已完成", "暂停中")
+RESUMABLE_STATUSES = {"方案中", "开发中", "测试中", "已完成"}
 
 
 def _task_theme_name(task_id: str) -> str:
@@ -49,11 +50,36 @@ def _phase_document_name(base_name: str, task_name: str) -> str:
     return f"{path.stem}-{task_name}{suffix}"
 
 
+def _current_stage_status(meta: dict[str, Any], fallback_status: str) -> tuple[str, str]:
+    current_stage = meta.get("current_stage")
+    if isinstance(current_stage, dict):
+        status = str(current_stage.get("status") or fallback_status)
+        resume_status = str(current_stage.get("resume_status") or meta.get("resume_status") or status)
+        return status, resume_status
+    return fallback_status, str(meta.get("resume_status") or fallback_status)
+
+
+def _archive_status_for_next(previous_status: str, previous_resume_status: str) -> tuple[str, str]:
+    if previous_status == "已完成":
+        return "已完成", "已完成"
+    if previous_status == "暂停中":
+        resume_status = previous_resume_status if previous_resume_status in RESUMABLE_STATUSES else "方案中"
+        return "暂停中", resume_status
+    return "暂停中", previous_status
+
+
+def _phase_status_text(status: str, resume_status: str) -> str:
+    if status == "暂停中" and resume_status and resume_status != status:
+        return f"{status}（原状态：{resume_status}）"
+    return status
+
+
 def render_next_phase_plan(
     task_name: str,
     repo_keys: list[str],
     previous_task_name: str,
     previous_plan: str,
+    previous_status_text: str,
     bbs_id: str | None = None,
 ) -> str:
     repo_text = ", ".join(repo_keys)
@@ -69,11 +95,12 @@ def render_next_phase_plan(
 ## 阶段说明
 - 当前阶段任务：{task_name}
 {bbs_line}- 前置阶段任务：{previous_task_name}
+- 前置阶段状态：{previous_status_text}
 - 历史阶段方案：./{previous_plan}
 - 当前阶段状态：方案中
 
 ## 当前目标
-- 背景：基于上一阶段已完成能力，继续推进本阶段任务
+- 背景：基于上一阶段已有上下文，继续推进本阶段任务
 - 目标：待补充
 - 当前结论：待补充
 
@@ -109,6 +136,7 @@ def render_next_index(
     next_status: str,
     next_plan_name: str,
     previous_plan_name: str,
+    previous_status_text: str,
     phase: int,
     bbs_id: str | None = None,
 ) -> str:
@@ -128,7 +156,8 @@ def render_next_index(
             f"- 当前阶段：第 {phase} 阶段",
             f"- 当前阶段任务：{next_task_name}",
             f"- 前置阶段任务：{previous_task_name}",
-            "- 关系说明：当前阶段基于前置阶段已上线/已完成能力继续推进。",
+            f"- 前置阶段状态：{previous_status_text}",
+            "- 关系说明：当前阶段基于前置阶段已有上下文继续推进；前置阶段未必已经完成或上线。",
             "",
             "## 当前入口",
             "- 事实：./meta.yaml",
@@ -145,16 +174,18 @@ def update_progress_for_next_phase(
     next_task_name: str,
     next_branch_name: str,
     next_plan_name: str,
+    previous_archive_status: str,
     dry_run: bool,
 ) -> None:
     if not progress_path.exists():
         return
     text = progress_path.read_text(encoding="utf-8")
 
+    previous_progress_text = "上一阶段已完成，本阶段已开启。" if previous_archive_status == "已完成" else "上一阶段已暂停，本阶段已开启。"
     current_progress = "\n".join(
         [
             "## 当前进展",
-            "- 已完成：上一阶段已完成，本阶段已开启。",
+            f"- 已完成：{previous_progress_text}",
             f"- 进行中：整理“{next_task_name}”的当前阶段方案与范围。",
             "- 下一步：补充当前阶段 plan，并等待明确开发指令。",
         ]
@@ -181,11 +212,12 @@ def update_progress_for_next_phase(
             updated = updated.rstrip() + "\n\n" + actual_changes + "\n"
 
     marker = "## 变更记录"
+    previous_record_text = "上一阶段已完成" if previous_archive_status == "已完成" else "上一阶段已暂停"
     record = "\n".join(
         [
             f"- {dt.date.today().isoformat()}",
             f"  - 做了什么：下一阶段开启，当前任务为“{next_task_name}”",
-            f"  - 结果：基于远程 {NEXT_BASE_BRANCH} 创建记录分支 `{next_branch_name}`，新阶段状态重置为方案中",
+            f"  - 结果：{previous_record_text}，基于远程 {NEXT_BASE_BRANCH} 创建记录分支 `{next_branch_name}`，新阶段状态为方案中",
         ]
     )
     if marker in updated:
@@ -221,9 +253,12 @@ def main() -> int:
     }
 
     meta_path, meta = load_task_meta(docs_root, args.task_id)
-    previous_status = require_task_status(meta, NEXT_ALLOWED_STATUSES, "next")
-    if previous_status != "已完成":
-        print(f"[INFO] current status is {previous_status}; treat /task-workflow next as previous stage completed")
+    meta_status = require_task_status(meta, NEXT_ALLOWED_STATUSES, "next")
+    previous_status, previous_resume_status = _current_stage_status(meta, meta_status)
+    previous_archive_status, previous_archive_resume_status = _archive_status_for_next(
+        previous_status,
+        previous_resume_status,
+    )
 
     next_task_name = sanitize_task_segment(args.next_task_name)
     next_bbs_id = str(args.bbs_id or "").strip()
@@ -317,7 +352,8 @@ def main() -> int:
     previous_phase = {
         "phase": current_phase,
         "task_name": previous_task_name,
-        "status": "已完成",
+        "status": previous_archive_status,
+        "resume_status": previous_archive_resume_status,
         "plan": previous_plan_name,
         "repos": previous_repo_branches,
     }
@@ -363,7 +399,14 @@ def main() -> int:
     progress_path = docs_task_root / documents.get("progress", "progress.md")
     write_text(
         next_plan_path,
-        render_next_phase_plan(next_task_name, repo_keys, previous_task_name, previous_plan_name, next_bbs_id or None),
+        render_next_phase_plan(
+            next_task_name,
+            repo_keys,
+            previous_task_name,
+            previous_plan_name,
+            _phase_status_text(previous_archive_status, previous_archive_resume_status),
+            next_bbs_id or None,
+        ),
         args.dry_run,
     )
     write_text(
@@ -375,6 +418,7 @@ def main() -> int:
             next_status="方案中",
             next_plan_name=next_plan_name,
             previous_plan_name=previous_plan_name,
+            previous_status_text=_phase_status_text(previous_archive_status, previous_archive_resume_status),
             phase=current_phase + 1,
             bbs_id=next_bbs_id or None,
         ),
@@ -385,6 +429,7 @@ def main() -> int:
         next_task_name,
         next_branch_name,
         next_plan_name,
+        previous_archive_status,
         args.dry_run,
     )
     print("task next phase ready")

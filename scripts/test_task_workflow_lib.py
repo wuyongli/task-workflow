@@ -83,12 +83,19 @@ class ReviewDocumentationTests(unittest.TestCase):
             "非阻塞风险",
             "代码质量优化",
             "测试代码收敛",
-            "必须先执行 `prepare_task_runtime.py <task-id> --repo <目标前端>`",
+            "审查总览：🔴 阻塞",
+            "审查总览：🟡 有注意项",
+            "审查总览：🟢 完全通过",
+            "绿色只表示完全没有问题或验证已通过",
+            "每个固定层级标题前必须带聚合状态点",
+            "每条明细也必须单独标记",
+            "只有目标前端配置了 `patch-node-frontend-environment`",
+            "小程序 / 微信开发者工具类前端不强制 runtime prepare",
             "runtime prepare 成功后，必须重新执行原始验证命令",
             "不能把 `@rolldown` / `@typescript` native 缺包写成最终发布验证阻断",
             "未发现阻塞问题不等于没有优化空间",
             "只列有明确维护成本、容易误用、低成本可修的优化点",
-            "没有内容的层级可以用一行 `未发现` 收起",
+            "没有内容的层级可以用一行 `🟢 未发现` 收起",
         ]:
             self.assertIn(expected, review_text)
 
@@ -1110,6 +1117,43 @@ class PublishTargetTests(unittest.TestCase):
             "采购优化",
         )
 
+    def test_build_pr_default_title_uses_actual_pr_repo_set_not_all_bound_repos(self) -> None:
+        task_meta = {
+            "task_id": "2026-08-20-采购优化",
+            "current_stage": {"task_name": "采购优化"},
+        }
+        repo_cfg_by_key = {
+            "producer-backend": {
+                "key": "producer-backend",
+                "notes": "产地通后端",
+                "runtime": {"mode": "shared-backend-app"},
+            },
+            "pf-mproducer-supplier": {
+                "key": "pf-mproducer-supplier",
+                "notes": "产地通手机前端",
+                "runtime": {"mode": "patch-node-frontend-environment"},
+            },
+        }
+
+        self.assertEqual(
+            lib.build_pr_default_title(
+                task_meta,
+                "pf-mproducer-supplier",
+                ["pf-mproducer-supplier"],
+                repo_cfg_by_key,
+            ),
+            "采购优化",
+        )
+        self.assertEqual(
+            lib.build_pr_default_title(
+                task_meta,
+                "producer-backend",
+                ["producer-backend"],
+                repo_cfg_by_key,
+            ),
+            "采购优化",
+        )
+
     def test_publish_main_defaults_to_all_bound_repos_when_no_targets(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace_root = Path(tmpdir) / "workspace"
@@ -1485,6 +1529,136 @@ class PublishTargetTests(unittest.TestCase):
         find_log.assert_called_once()
         self.assertEqual(find_log.call_args.args[1], ["sg", "publish", "local"])
         self.assertEqual(result["status"], "success")
+
+    def test_run_publish_job_prepares_patch_node_frontend_native_optional_before_local_publish(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            call_order: list[str] = []
+
+            def fake_prepare(repo_cfg: dict[str, object], path: Path, dry_run: bool) -> dict[str, object]:
+                call_order.append("prepare")
+                self.assertEqual(repo_cfg["key"], "pf-mproducer-supplier")
+                self.assertEqual(path, repo_path)
+                self.assertFalse(dry_run)
+                return {"skipped": False, "blocking": False, "notes": ["native optional dependencies repaired"], "warnings": []}
+
+            def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+                call_order.append("publish")
+                return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="发布成功\n", stderr="")
+
+            with (
+                mock.patch.object(
+                    publish_script,
+                    "prepare_node_frontend_native_optional_runtime",
+                    side_effect=fake_prepare,
+                ) as prepare,
+                mock.patch.object(publish_script, "read_package_manifest_diff", return_value=set()),
+                mock.patch.object(publish_script.subprocess, "run", side_effect=fake_run) as run,
+                mock.patch.object(publish_script, "find_publish_cli_log_entry", return_value=None),
+            ):
+                result = publish_script.run_publish_job(
+                    {
+                        "repo_key": "pf-mproducer-supplier",
+                        "repo_path": repo_path,
+                        "repo_cfg": {
+                            "key": "pf-mproducer-supplier",
+                            "runtime": {"mode": "patch-node-frontend-environment"},
+                        },
+                        "command": ["sg", "publish", "local"],
+                    }
+                )
+
+        prepare.assert_called_once()
+        run.assert_called_once()
+        self.assertEqual(call_order, ["prepare", "publish"])
+        self.assertEqual(result["status"], "success")
+        self.assertFalse(result["runtime_prepare"]["skipped"])
+
+    def test_run_publish_job_does_not_prepare_backend_publish(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            with (
+                mock.patch.object(publish_script, "prepare_node_frontend_native_optional_runtime") as prepare,
+                mock.patch.object(
+                    publish_script.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess(
+                        args=["sg", "publish", "jenkins"],
+                        returncode=0,
+                        stdout="发布成功\n",
+                        stderr="",
+                    ),
+                ),
+                mock.patch.object(publish_script, "find_publish_cli_log_entry", return_value=None),
+            ):
+                result = publish_script.run_publish_job(
+                    {
+                        "repo_key": "producer-backend",
+                        "repo_path": repo_path,
+                        "repo_cfg": {"key": "producer-backend", "runtime": {"mode": "shared-backend-app"}},
+                        "command": ["sg", "publish", "jenkins"],
+                    }
+                )
+
+        prepare.assert_not_called()
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["runtime_prepare"]["skipped"])
+
+    def test_run_publish_job_stops_when_frontend_prepare_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            with (
+                mock.patch.object(publish_script, "read_package_manifest_diff", return_value=set()),
+                mock.patch.object(
+                    publish_script,
+                    "prepare_node_frontend_native_optional_runtime",
+                    side_effect=RuntimeError("missing binding"),
+                ),
+                mock.patch.object(publish_script.subprocess, "run") as run,
+            ):
+                result = publish_script.run_publish_job(
+                    {
+                        "repo_key": "pf-mproducer-supplier",
+                        "repo_path": repo_path,
+                        "repo_cfg": {
+                            "key": "pf-mproducer-supplier",
+                            "runtime": {"mode": "patch-node-frontend-environment"},
+                        },
+                        "command": ["sg", "publish", "local"],
+                    }
+                )
+
+        run.assert_not_called()
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("frontend native optional prepare failed", result["error_message"])
+
+    def test_run_publish_job_stops_when_frontend_prepare_changes_lockfile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            with (
+                mock.patch.object(publish_script, "read_package_manifest_diff", side_effect=[set(), {"package-lock.json"}]),
+                mock.patch.object(
+                    publish_script,
+                    "prepare_node_frontend_native_optional_runtime",
+                    return_value={"skipped": False, "blocking": False, "notes": ["attempted repair"], "warnings": []},
+                ),
+                mock.patch.object(publish_script.subprocess, "run") as run,
+            ):
+                result = publish_script.run_publish_job(
+                    {
+                        "repo_key": "pf-mproducer-supplier",
+                        "repo_path": repo_path,
+                        "repo_cfg": {
+                            "key": "pf-mproducer-supplier",
+                            "runtime": {"mode": "patch-node-frontend-environment"},
+                        },
+                        "command": ["sg", "publish", "local"],
+                    }
+                )
+
+        run.assert_not_called()
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("package-lock.json", "; ".join(result["runtime_prepare"]["warnings"]))
 
     def test_run_publish_job_keeps_cli_log_success_as_uncertain_without_terminal_signal(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2237,7 +2411,8 @@ class NextTaskWorkspaceTests(unittest.TestCase):
             self.assertNotIn("active_decision_log", meta)
             self.assertEqual(meta["repos"][0]["branch"], "加工单扫码支持托盘码二期")
             self.assertEqual(meta["previous_phases"][0]["plan"], "plan.md")
-            self.assertEqual(meta["previous_phases"][0]["status"], "已完成")
+            self.assertEqual(meta["previous_phases"][0]["status"], "暂停中")
+            self.assertEqual(meta["previous_phases"][0]["resume_status"], "测试中")
             self.assertEqual(meta["previous_phases"][0]["bbs_id"], "53850")
             self.assertEqual(meta["previous_phases"][0]["decision_log"], "decision-log.md")
             self.assertEqual(
@@ -2262,11 +2437,13 @@ class NextTaskWorkspaceTests(unittest.TestCase):
             self.assertIn("- 需求编号：#53999", index_text)
             self.assertIn("- 当前阶段任务：加工单扫码支持托盘码二期", index_text)
             self.assertIn("- 前置阶段任务：部门转货", index_text)
+            self.assertIn("- 前置阶段状态：暂停中（原状态：测试中）", index_text)
             self.assertIn("- 当前方案：./plan-加工单扫码支持托盘码二期.md", index_text)
             self.assertIn("- 历史阶段：./plan.md", index_text)
 
             progress_text = (task_docs_root / "progress.md").read_text(encoding="utf-8")
             self.assertIn("下一阶段开启", progress_text)
+            self.assertIn("上一阶段已暂停，本阶段已开启。", progress_text)
             self.assertIn("加工单扫码支持托盘码二期", progress_text)
             self.assertNotIn("decision-log-加工单扫码支持托盘码二期.md", progress_text)
 
@@ -2373,6 +2550,8 @@ class NextTaskWorkspaceTests(unittest.TestCase):
             self.assertNotIn("active_decision_log", meta)
             self.assertEqual(meta["repos"][0]["branch"], "一期后端分支")
             self.assertEqual(meta["repos"][1]["branch"], "先建优化任务-加工一个托盘码一行")
+            self.assertEqual(meta["previous_phases"][0]["status"], "已完成")
+            self.assertEqual(meta["previous_phases"][0]["resume_status"], "已完成")
             self.assertEqual(
                 meta["previous_phases"][0]["repos"],
                 [
@@ -2553,8 +2732,8 @@ class NextTaskWorkspaceTests(unittest.TestCase):
                         "previous_phases:",
                         "- phase: 1",
                         "  task_name: 一期任务",
-                        "  status: 已完成",
-                        "  resume_status: 已完成",
+                        "  status: 暂停中",
+                        "  resume_status: 开发中",
                         "  plan: plan.md",
                         "  decision_log: decision-log.md",
                         "  repos:",
@@ -2589,12 +2768,19 @@ class NextTaskWorkspaceTests(unittest.TestCase):
             meta = lib.load_yaml(task_docs_root / "meta.yaml")
             self.assertEqual(meta["phase"], 1)
             self.assertEqual(meta["current_task_name"], "一期任务")
+            self.assertEqual(meta["status"], "开发中")
+            self.assertEqual(meta["resume_status"], "开发中")
+            self.assertTrue(meta["coding_allowed"])
             self.assertEqual(meta["active_plan"], "plan.md")
             self.assertEqual(meta["active_decision_log"], "decision-log.md")
             self.assertEqual(meta["repos"][0]["branch"], "一期任务")
             self.assertEqual(meta["current_stage"]["repos"], [{"key": "producer-backend", "branch": "一期任务"}])
+            self.assertEqual(meta["current_stage"]["status"], "开发中")
+            self.assertEqual(meta["current_stage"]["resume_status"], "开发中")
             self.assertEqual(meta["current_stage"]["decision_log"], "decision-log.md")
             self.assertEqual(meta["previous_phases"][0]["phase"], 2)
+            self.assertEqual(meta["previous_phases"][0]["status"], "暂停中")
+            self.assertEqual(meta["previous_phases"][0]["resume_status"], "方案中")
             self.assertEqual(meta["previous_phases"][0]["decision_log"], "decision-log-二期任务.md")
             self.assertEqual(meta["previous_phases"][0]["repos"], [{"key": "producer-backend", "branch": "二期任务"}])
             self.assertIn("- 当前阶段任务：一期任务", (task_docs_root / "index.md").read_text(encoding="utf-8"))
@@ -2899,7 +3085,7 @@ class NextTaskWorkspaceTests(unittest.TestCase):
                 commands,
             )
 
-    def test_next_task_workspace_rejects_planning_status(self) -> None:
+    def test_next_task_workspace_allows_planning_status_and_pauses_previous_phase(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace_root = Path(tmpdir) / "workspace"
             docs_root = workspace_root / "_docs"
@@ -2930,22 +3116,100 @@ class NextTaskWorkspaceTests(unittest.TestCase):
                         "status: 方案中",
                         "resume_status: 方案中",
                         "coding_allowed: false",
+                        "phase: 1",
+                        "current_task_name: 部门转货",
+                        "active_plan: plan.md",
                         "repos: []",
                         "",
                     ]
                 ),
                 encoding="utf-8",
             )
+            (task_docs_root / "index.md").write_text("# 部门转货\n", encoding="utf-8")
+            (task_docs_root / "plan.md").write_text("# 一期方案\n", encoding="utf-8")
 
-            with mock.patch("sys.argv", [
-                "next_task_workspace.py",
-                task_id,
-                "加工单扫码支持托盘码二期",
-                "--config-root",
-                str(config_root),
-            ]):
-                with self.assertRaisesRegex(ValueError, "next requires task status in \\[开发中, 测试中, 已完成\\]"):
-                    next_script.main()
+            with (
+                mock.patch.object(next_script, "run") as run_mock,
+                mock.patch("sys.argv", [
+                    "next_task_workspace.py",
+                    task_id,
+                    "加工单扫码支持托盘码二期",
+                    "--config-root",
+                    str(config_root),
+                ]),
+            ):
+                self.assertEqual(next_script.main(), 0)
+
+            run_mock.assert_not_called()
+            meta = lib.load_yaml(task_docs_root / "meta.yaml")
+            self.assertEqual(meta["status"], "方案中")
+            self.assertEqual(meta["previous_phases"][0]["status"], "暂停中")
+            self.assertEqual(meta["previous_phases"][0]["resume_status"], "方案中")
+
+    def test_next_task_workspace_keeps_paused_phase_resume_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir) / "workspace"
+            docs_root = workspace_root / "_docs"
+            tasks_root = workspace_root / "_tasks"
+            config_root = workspace_root / "config"
+            task_id = "2026-06-03-部门转货"
+            task_docs_root = docs_root / task_id
+            task_code_root = tasks_root / task_id
+            task_docs_root.mkdir(parents=True)
+            task_code_root.mkdir(parents=True)
+            config_root.mkdir(parents=True)
+
+            (config_root / "workspace.yaml").write_text(
+                "\n".join(
+                    [
+                        f'workspace_root: "{workspace_root}"',
+                        f'tasks_root: "{tasks_root}"',
+                        f'docs_root: "{docs_root}"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (task_docs_root / "meta.yaml").write_text(
+                "\n".join(
+                    [
+                        f"task_id: {task_id}",
+                        "status: 暂停中",
+                        "resume_status: 测试中",
+                        "coding_allowed: false",
+                        "phase: 1",
+                        "current_task_name: 部门转货",
+                        "active_plan: plan.md",
+                        "repos: []",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (task_docs_root / "index.md").write_text("# 部门转货\n", encoding="utf-8")
+            (task_docs_root / "plan.md").write_text("# 一期方案\n", encoding="utf-8")
+
+            with (
+                mock.patch.object(next_script, "run") as run_mock,
+                mock.patch("sys.argv", [
+                    "next_task_workspace.py",
+                    task_id,
+                    "暂停后直接开启二期",
+                    "--config-root",
+                    str(config_root),
+                ]),
+            ):
+                self.assertEqual(next_script.main(), 0)
+
+            run_mock.assert_not_called()
+            meta = lib.load_yaml(task_docs_root / "meta.yaml")
+            self.assertEqual(meta["status"], "方案中")
+            self.assertEqual(meta["previous_phases"][0]["status"], "暂停中")
+            self.assertEqual(meta["previous_phases"][0]["resume_status"], "测试中")
+            self.assertIn(
+                "- 前置阶段状态：暂停中（原状态：测试中）",
+                (task_docs_root / "index.md").read_text(encoding="utf-8"),
+            )
 
 
 class CompleteCleanupRuntimeTests(unittest.TestCase):

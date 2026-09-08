@@ -21,6 +21,7 @@ from task_workflow_lib import (
 
 
 DEFAULT_CONFIG_ROOT = Path("/Users/wuyongli/Documents/sg-project/_workspace/config")
+RESUMABLE_STATUSES = {"方案中", "开发中", "测试中", "已完成"}
 
 
 def _task_theme_name(task_id: str) -> str:
@@ -114,6 +115,32 @@ def _stage_repo_branch_map(stage: dict[str, Any]) -> dict[str, str]:
 
 def _coding_allowed_for_status(status: str) -> bool:
     return status in {"开发中", "测试中"}
+
+
+def _archive_stage_for_history(stage: dict[str, Any]) -> dict[str, Any]:
+    archived = dict(stage)
+    status = str(archived.get("status") or "方案中")
+    resume_status = str(archived.get("resume_status") or status)
+    if status == "已完成":
+        archived["status"] = "已完成"
+        archived["resume_status"] = "已完成"
+        return archived
+    if status == "暂停中":
+        archived["status"] = "暂停中"
+        archived["resume_status"] = resume_status if resume_status in RESUMABLE_STATUSES else "方案中"
+        return archived
+    archived["status"] = "暂停中"
+    archived["resume_status"] = status
+    return archived
+
+
+def _activate_stage_status(stage: dict[str, Any]) -> tuple[str, str]:
+    status = str(stage.get("status") or "方案中")
+    resume_status = str(stage.get("resume_status") or status)
+    if status == "暂停中":
+        activated_status = resume_status if resume_status in RESUMABLE_STATUSES else "方案中"
+        return activated_status, activated_status
+    return status, resume_status or status
 
 
 def render_stage_index(
@@ -285,11 +312,10 @@ def main() -> int:
         for stage in previous_phases
         if isinstance(stage, dict) and str(stage.get("phase")) != str(target_stage.get("phase"))
     ]
-    next_previous_phases.append(current_stage)
+    next_previous_phases.append(_archive_stage_for_history(current_stage))
     next_previous_phases.sort(key=lambda stage: _coerce_phase(stage.get("phase")))
 
-    target_status = str(target_stage.get("status") or "方案中")
-    target_resume_status = str(target_stage.get("resume_status") or target_status)
+    target_status, target_resume_status = _activate_stage_status(target_stage)
     target_plan = str(target_stage.get("plan") or documents.get("plan", "plan.md"))
     target_task_name = str(target_stage.get("task_name") or _task_theme_name(args.task_id))
     target_bbs_id = str(target_stage.get("bbs_id") or "").strip()
