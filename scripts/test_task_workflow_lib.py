@@ -808,6 +808,39 @@ class StopTaskRuntimeTests(unittest.TestCase):
             cwd=str(docker_dir),
         )
 
+    def test_cleanup_task_runtime_removes_shared_backend_app_container(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            docker_dir = repo_path / "docker"
+            docker_dir.mkdir()
+            (docker_dir / ".task.env").write_text("TASK_APP_HOST_PORT=18897\n", encoding="utf-8")
+            (docker_dir / "docker-compose.task.yml").write_text("services:\n  app:\n", encoding="utf-8")
+
+            with mock.patch.object(lib.subprocess, "run") as run_mock:
+                messages = lib.cleanup_task_runtime(
+                    {"key": "producer-backend", "runtime": {"mode": "shared-backend-app"}},
+                    repo_path,
+                    dry_run=False,
+                )
+
+        self.assertEqual(messages, ["producer-backend: removed task app container"])
+        run_mock.assert_called_once_with(
+            [
+                "docker",
+                "compose",
+                "--env-file",
+                ".task.env",
+                "-f",
+                "docker-compose.task.yml",
+                "rm",
+                "-sf",
+                "app",
+            ],
+            check=True,
+            text=True,
+            cwd=str(docker_dir),
+        )
+
 
 class PublishTargetTests(unittest.TestCase):
     def test_resolve_publish_target_kind_supports_human_targets(self) -> None:
@@ -3360,7 +3393,7 @@ class CompleteCleanupRuntimeTests(unittest.TestCase):
 
             with (
                 mock.patch.object(cleanup_script, "validate_repo_state", return_value=[]),
-                mock.patch.object(cleanup_script, "stop_task_runtime", create=True) as stop_runtime_mock,
+                mock.patch.object(cleanup_script, "cleanup_task_runtime", create=True) as cleanup_runtime_mock,
                 mock.patch("sys.argv", [
                     "cleanup_task_workspace.py",
                     task_id,
@@ -3370,8 +3403,8 @@ class CompleteCleanupRuntimeTests(unittest.TestCase):
             ):
                 self.assertEqual(cleanup_script.main(), 0)
 
-            stop_runtime_mock.assert_called_once()
-            self.assertEqual(stop_runtime_mock.call_args.args[0]["runtime"]["mode"], "shared-backend-app")
+            cleanup_runtime_mock.assert_called_once()
+            self.assertEqual(cleanup_runtime_mock.call_args.args[0]["runtime"]["mode"], "shared-backend-app")
 
 
 if __name__ == "__main__":

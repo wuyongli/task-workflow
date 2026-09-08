@@ -708,6 +708,37 @@ def _stop_shared_backend_runtime(
     return [f"{repo_cfg.get('key')}: stopped task app container"]
 
 
+def _cleanup_shared_backend_runtime(
+    repo_cfg: dict[str, Any],
+    repo_path: Path,
+    runtime_cfg: dict[str, Any],
+    dry_run: bool,
+) -> list[str]:
+    env_rel_path = str(runtime_cfg.get("task_env_file", "docker/.task.env"))
+    compose_rel_path = str(runtime_cfg.get("task_compose_file", "docker/docker-compose.task.yml"))
+    env_path = repo_path / env_rel_path
+    compose_path = repo_path / compose_rel_path
+    if not env_path.exists() or not compose_path.exists():
+        return [f"{repo_cfg.get('key')}: task docker files missing, skip runtime cleanup"]
+
+    command = [
+        "docker",
+        "compose",
+        "--env-file",
+        env_path.name,
+        "-f",
+        compose_path.name,
+        "rm",
+        "-sf",
+        "app",
+    ]
+    cwd = compose_path.parent
+    print("$", " ".join(command), f"(cwd={cwd})")
+    if not dry_run:
+        subprocess.run(command, check=True, text=True, cwd=str(cwd))
+    return [f"{repo_cfg.get('key')}: removed task app container"]
+
+
 def _port_is_available(port: int) -> bool:
     for host in ("127.0.0.1", "0.0.0.0"):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -1552,6 +1583,19 @@ def stop_task_runtime(repo_cfg: dict[str, Any], repo_path: Path, dry_run: bool) 
     if runtime_mode == "shared-backend-app":
         return _stop_shared_backend_runtime(repo_cfg, repo_path, runtime_cfg, dry_run)
     return [f"{repo_cfg.get('key')}: no managed runtime stop action"]
+
+
+def cleanup_task_runtime(repo_cfg: dict[str, Any], repo_path: Path, dry_run: bool) -> list[str]:
+    runtime_cfg = repo_cfg.get("runtime") or {}
+    if not isinstance(runtime_cfg, dict):
+        raise ValueError(f"runtime config for repo {repo_cfg.get('key')} must be a mapping")
+
+    runtime_mode = str(runtime_cfg.get("mode") or "").strip()
+    if uses_patch_node_frontend_runtime(repo_cfg):
+        return _stop_node_frontend_runtime(repo_cfg, repo_path, runtime_cfg, dry_run)
+    if runtime_mode == "shared-backend-app":
+        return _cleanup_shared_backend_runtime(repo_cfg, repo_path, runtime_cfg, dry_run)
+    return [f"{repo_cfg.get('key')}: no managed runtime cleanup action"]
 
 
 def _prepare_shared_backend_runtime(

@@ -37,10 +37,10 @@ description: "用于 /Users/wuyongli/Documents/sg-project/_workspace 任务工�
 - 任务过程中产生的不确定材料，先按文件形态放入 `assets/`，不要为了内容不确定而新建零散 markdown
 
 固定路径：
-- workspace root: `/Users/wuyongli/Documents/sg-project/_workspace`
-- task docs: `/Users/wuyongli/Documents/sg-project/_workspace/_docs/<task-id>`
-- task code: `/Users/wuyongli/Documents/sg-project/_workspace/_tasks/<task-id>`
-- runtime config: `/Users/wuyongli/Documents/sg-project/_workspace/config`
+- 工作区根目录：`/Users/wuyongli/Documents/sg-project/_workspace`
+- 任务文档目录：`/Users/wuyongli/Documents/sg-project/_workspace/_docs/<task-id>`
+- 任务代码目录：`/Users/wuyongli/Documents/sg-project/_workspace/_tasks/<task-id>`
+- 运行配置目录：`/Users/wuyongli/Documents/sg-project/_workspace/config`
 
 任务命名规则：
 - task id 使用 `YYYY-MM-DD-<原始任务名>`
@@ -97,7 +97,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/create_task_wor
 ```
 
 运行说明：
-- `create_task_workspace.py` will only补齐缺失的本地运行配置，不会覆盖 task clone 里已有文件
+- `create_task_workspace.py` 只补齐缺失的本地运行配置，不会覆盖任务 clone 里已有文件
 - `--bbs-id` 是选填；用户提供内部需求反馈编号时才写入 `meta.yaml` 和初始文档，不提供时不生成空编号占位
 - 不会自动安装项目业务依赖；`producer-backend` 仅会为任务 app 容器补齐必要测试工具
 - 任务分支只以远端默认分支作为起点，不自动跟踪 `origin/master` 或其他默认分支；首次推送任务分支时再建立自己的 upstream
@@ -354,12 +354,13 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_mys
 用于编码和自测完成后标记任务完成。
 
 规则：
-- allow complete only from `方案中` / `开发中` / `测试中`
-- require each recorded repo to be clean and pushed before marking complete
-- before marking complete, try to stop the current task runtime for each bound repo to release occupied local ports or task containers
-- if some repo runtime is already not running, just report it and continue; do not block complete only because there is nothing to stop
-- keep task docs under `_docs/<task-id>`
-- keep task code under `_tasks/<task-id>` until cleanup
+- 只允许从 `方案中` / `开发中` / `测试中` 标记完成
+- 标记完成前，每个记录仓库都必须工作区干净，并且已推送到远程
+- 标记完成前，尝试停止每个绑定仓库的当前任务 runtime，释放本地端口或任务容器
+- 如果某个仓库的 runtime 已经没有运行，只说明现状并继续；不要因为无可停止内容阻断完成
+- `complete` 只停止任务 runtime，不删除任务代码目录，也不删除 Docker 容器
+- 保留 `_docs/<task-id>` 下的任务文档
+- 保留 `_tasks/<task-id>` 下的任务代码，直到显式执行 `cleanup`
 - `已完成` 表示当前阶段任务已完成，不等于这个工作空间永久结束；如果后续还要在同一长期主题下做二期，应进入 `next`
 
 推荐命令：
@@ -435,12 +436,14 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_sta
 用于任务已完成，并且需要清理任务代码目录的时候。
 
 规则：
-- require task status = `已完成`
-- require each recorded repo to be clean and pushed
-- before removing task code, try to stop the current task runtime for each bound repo to avoid leaving old ports or task containers behind
-- if some repo runtime is already not running, just report it and continue cleanup
-- remove `_tasks/<task-id>`
-- never delete `_docs/<task-id>`
+- 任务状态必须是 `已完成`
+- 每个记录仓库都必须工作区干净，并且已推送到远程
+- 删除任务代码前，先清理每个绑定仓库的当前任务 runtime，避免遗留旧端口或已无法使用的任务 `app` 容器
+- 对于 `shared-backend-app`，`cleanup` 只删除当前任务专属的后端 `app` 容器
+- `cleanup` 不得删除共享 Docker 服务、Docker volume、MySQL 数据目录、镜像、任务文档、远程分支或源仓库
+- 如果某个仓库的 runtime 已经没有运行，只说明现状并继续清理
+- 删除 `_tasks/<task-id>`
+- 不删除 `_docs/<task-id>`
 - 如果后续仍可能在同一工作空间上进入 `next`，不要急于 cleanup
 
 推荐命令：
@@ -454,10 +457,10 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/cleanup_task_wo
 用于用户想快速查看任务状态和任务仓库路径。
 
 状态输出应包含：
-- all known tasks and their current status
-- each repo bound to each task
-- each repo path and recorded branch
-- whether the repo path still exists
+- 所有已知任务及当前状态
+- 每个任务绑定的仓库
+- 每个仓库路径和记录分支
+- 仓库路径是否仍然存在
 
 推荐命令：
 

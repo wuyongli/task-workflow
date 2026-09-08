@@ -6,12 +6,12 @@ import argparse
 from pathlib import Path
 
 from task_workflow_lib import (
+    cleanup_task_runtime,
     load_task_meta,
     load_yaml,
     require_task_status,
     resolve_repo_path,
     safe_remove_path,
-    stop_task_runtime,
     validate_repo_state,
 )
 
@@ -69,8 +69,8 @@ def main() -> int:
         repo_key = str(repo_meta.get("key") or "unknown")
         repo_path = resolve_repo_path(tasks_root, args.task_id, repo_meta)
         repo_cfg = repo_cfg_by_key.get(repo_key, repo_meta)
-        for message in stop_task_runtime(repo_cfg, repo_path, args.dry_run):
-            print(f"[STOP] {repo_key} -> {message}")
+        for message in cleanup_task_runtime(repo_cfg, repo_path, args.dry_run):
+            print(f"[CLEANUP] {repo_key} -> {message}")
 
     safe_remove_path(tasks_root / args.task_id, args.dry_run)
     print("task code cleanup complete")
