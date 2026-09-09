@@ -25,9 +25,11 @@
 - 源分支直接使用 `meta.yaml` 中该仓库记录的任务分支；目标分支默认使用仓库远程默认分支，用户明确提供目标分支时才覆盖
 - 创建前先加载当前任务的 `meta.yaml`，确认目标仓库存在，当前分支与记录分支一致且工作区干净
 - 完成基础校验后，对每个候选仓库 `fetch origin --prune`，再检查任务分支相对 `origin/<远程默认分支>` 是否有实际 diff；无 diff 的仓库跳过创建，并在最终结果中列为“无本次 PR 改动”
-- 先运行 `sg pr status` 检查当前分支；若已存在开放 PR，输出其状态和链接，停止创建
+- 先运行 `sg pr status` 检查当前分支；若已存在开放 PR，输出其状态和链接，不重复创建
 - 若当前分支尚未推送到 `origin`，先执行 `git push -u origin <当前分支>`；这是创建 PR 的必要前置操作，但不得自动 commit、force-push 或改写历史
-- 未指定 `--title` 时，默认标题仅为 `任务名（是否有前端/后端）`；`sg pr create` 会自动添加创建当天和从 `--task-link` 解析的 BBS 编号，task-workflow 不得将任务日期或 `bbs_id` 再传入 `--title`
+- 未指定 `--title` 时，默认标题仅为 `任务名（是否有前端/后端）`；`sg pr create` 会自动添加当天日期和从 `--task-link` 解析的 BBS 编号，task-workflow 不得将任务日期或 `bbs_id` 再传入 `--title`
+- PR 标题里的日期按本次 PR 操作日 / 预期上线日理解，不按任务创建日理解；如果用户明确给了上线日期，优先使用用户指定日期
+- 如果用户指定的上线日期不是当天，新建 PR 后也要先用 `sg pr view` 回读完整标题，再通过 `sg pr edit` 最小替换标题开头第一个 `#YYYYMMDD#`；不要为了指定日期手写整段标题前缀
 - 标题括号只基于候选绑定仓库中过滤后的“实际有 diff、准备创建 PR 的仓库集合”判断，不基于任务曾经绑定过的全部仓库判断
 - 标题里的任务名优先取 `current_stage.task_name`，其次取 `current_task_name`，最后取 `task_id` 去掉日期后的名称
 - 标题括号表示当前任务是否还有另一端配套改动，不表示当前 PR 所属仓库类型
@@ -38,6 +40,7 @@
 - 脚本或 AI 需要拼默认标题时，优先复用 `scripts/task_workflow_lib.py` 的 `build_pr_default_title(...)`，并传入实际有 diff、准备创建 PR 的仓库集合；不要重新手写一套括号判断
 - 用户显式提供 `--title` 时，完全使用用户标题，不再自动拼默认标题
 - 在目标仓库根目录创建：默认使用 `sg pr create --target <远程默认分支> --wip`；按用户提供或默认生成的 `--title`，以及用户提供的 `--desc`、重复的 `--reviewer` 与 `--task-link` 追加参数
+- 对已有开放 PR 做日期更新时，先用 `sg pr view` 读取完整标题，再通过 `sg pr edit` 只替换标题开头第一个 `#YYYYMMDD#`；不得替换后续 `#BBS#`，不能用短标题覆盖完整标题。编辑后再次 `sg pr view` 回读确认，确保 `WIP:`、BBS 编号、任务名和“有前端/有后端”后缀都保留
 - 用户传 `--no-wip`，或明确说“取消 WIP / 不要 WIP / 创建正式 PR”时，调用 `sg pr create` 时省略 `--wip`；不要把 `--no-wip` 透传给 `sg pr create`，它只是 task-workflow 层的意图参数
 - `sg pr create` 失败时只展示命令输出和错误，不改用 `glab` / `gitlab` 等客户端，不自动重试或修改既有 PR
 
@@ -161,5 +164,5 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/clean_develop_t
 
 创建 PR 时聚焦：
 - 当前识别到的任务、当前阶段和可选 `bbs_id`
-- 每个目标仓库的源分支、目标分支、默认或用户指定标题
+- 每个目标仓库的源分支、目标分支、默认或用户指定标题，以及标题日期采用的本次操作日 / 用户指定上线日
 - 已有 PR 检查、首次推送、创建结果、PR 编号和链接

@@ -231,13 +231,14 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_ru
 - 创建前要在候选绑定仓库基础上多做一次实际改动检查：相对远程默认分支没有 diff 的仓库跳过创建，并在结果里说明“无本次 PR 改动”
 - 源分支直接使用 `meta.yaml` 记录的任务分支；目标分支使用各仓库远程默认分支，用户明确指定目标分支时才覆盖
 - 未指定 `--title` 时，PR 标题默认按 `任务名（是否有前端/后端）` 生成；括号只基于实际有 diff、准备创建 PR 的仓库集合判断，不基于任务曾经绑定过的全部仓库判断
-- 日期和 BBS 编号由 `sg pr create` 按创建当天和 `--task-link` 自动拼接，task-workflow 不重复加入
-- 创建前先确认仓库存在、当前分支与 `meta.yaml` 记录分支一致、工作区干净，并用 `sg pr status` 检查当前分支没有已存在的开放 PR
+- PR 标题里的日期表示本次 PR 操作日 / 预期上线日，不是任务创建日；新建 PR 时通常由 `sg pr create` 按当天自动拼接，已有 PR 或用户指定非当天上线日时，应回读完整标题后最小更新标题开头第一个 `#YYYYMMDD#`
+- 创建前先确认仓库存在、当前分支与 `meta.yaml` 记录分支一致、工作区干净，并用 `sg pr status` 检查当前分支是否已有开放 PR
 - 源分支尚未推送时，允许先执行普通 `git push -u origin <当前分支>`；不自动提交、不 force-push、不改写历史
 - 默认创建 WIP PR：`sg pr create --target <远程默认分支> --wip`
 - 用户传 `--no-wip`，或明确说“取消 WIP / 不要 WIP / 创建正式 PR”时，调用 `sg pr create` 时省略 `--wip`
 - `--reviewer` 可重复；取消 WIP 只影响是否追加 `--wip`，不改变目标分支、标题、描述、reviewer 或授权边界
-- 若已有开放 PR、仓库状态异常、分支不一致、推送失败或 CLI 返回错误，只反馈事实，不自动关闭、编辑、合并或重试已有 PR
+- 若已有开放 PR，默认输出其状态和链接；如果本次明确是在继续准备上线或重新操作 PR，允许只更新标题中的操作日期 / 上线日期，但不得自动关闭、合并或重试已有 PR
+- 更新已有 PR 标题前必须先用 `sg pr view` 回读完整标题；更新日期时只替换标题开头第一个 `#YYYYMMDD#`，不得替换后续 `#BBS#`；编辑后再次 `sg pr view` 确认完整标题，保留 `WIP:`、BBS 编号、任务名和“有前端/有后端”后缀
 
 ### 8. Clean Develop
 
