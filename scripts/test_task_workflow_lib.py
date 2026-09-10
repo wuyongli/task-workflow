@@ -7,6 +7,7 @@ import socket
 import subprocess
 import tempfile
 import threading
+import tomllib
 import unittest
 import urllib.request
 from pathlib import Path
@@ -401,6 +402,7 @@ class FrontendLocalBackendPatchTests(unittest.TestCase):
                                 "optional": True,
                                 "os": ["darwin"],
                                 "cpu": ["arm64"],
+                                "version": "1.2.3",
                             },
                         },
                     }
@@ -410,7 +412,103 @@ class FrontendLocalBackendPatchTests(unittest.TestCase):
 
             with (
                 mock.patch.object(lib, "_node_platform_tag", return_value=("darwin", "arm64")),
-                mock.patch.object(lib, "run_shell") as run_shell_mock,
+                mock.patch.object(lib, "run_zsh_shell") as run_zsh_shell_mock,
+                mock.patch.object(lib, "_missing_node_platform_optional_dependencies", side_effect=[
+                    ["node_modules/demo-native-binding"],
+                    [],
+                    [],
+                ]),
+                mock.patch("subprocess.run") as subprocess_run_mock,
+            ):
+                subprocess_run_mock.return_value.stdout = ""
+                summary = lib.prepare_repo_runtime(
+                    {
+                        "key": "demo-frontend",
+                        "path": str(source_repo),
+                        "runtime": {
+                            "mode": "patch-node-frontend-environment",
+                            "task_env_file": ".codex/task-runtime.env",
+                            "task_port_key": "TASK_WEB_PORT",
+                            "app_port_start": 3209,
+                            "app_port_end": 3249,
+                            "environment_toml": ".codex/environments/environment.toml",
+                            "install_commands": ["npm install"],
+                            "start_commands": ["npm run start"],
+                        },
+                    },
+                    task_repo,
+                    dry_run=False,
+                )
+
+            run_zsh_shell_mock.assert_called_once()
+            self.assertIn("npm install --no-save --package-lock=false", run_zsh_shell_mock.call_args.args[0])
+            self.assertIn("demo-native-binding@1.2.3", run_zsh_shell_mock.call_args.args[0])
+            self.assertNotIn("npm ci --include=optional", run_zsh_shell_mock.call_args.args[0])
+            self.assertTrue(any("定向修复" in note for note in summary["notes"]))
+            self.assertEqual(summary["warnings"], [])
+
+    def test_node_optional_dependency_install_specs_uses_lockfile_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            (repo_path / "package-lock.json").write_text(
+                json.dumps(
+                    {
+                        "lockfileVersion": 3,
+                        "packages": {
+                            "node_modules/@rolldown/binding-darwin-arm64": {
+                                "optional": True,
+                                "version": "1.0.0",
+                            },
+                            "node_modules/demo-native-binding": {
+                                "optional": True,
+                                "version": "2.0.0",
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                lib._node_optional_dependency_install_specs(
+                    repo_path,
+                    ["node_modules/@rolldown/binding-darwin-arm64", "node_modules/demo-native-binding"],
+                ),
+                ["@rolldown/binding-darwin-arm64@1.0.0", "demo-native-binding@2.0.0"],
+            )
+
+    def test_prepare_repo_runtime_falls_back_when_missing_optional_version_is_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source_repo = root / "source"
+            task_repo = root / "task-root" / "demo-frontend__demo"
+            source_repo.mkdir(parents=True)
+            task_repo.mkdir(parents=True)
+            (task_repo / "package.json").write_text(
+                '{"name":"demo-frontend","scripts":{"start":"vite --host 0.0.0.0"},"volta":{"node":"24.14.0"}}',
+                encoding="utf-8",
+            )
+            (task_repo / "node_modules").mkdir()
+            (task_repo / "package-lock.json").write_text(
+                json.dumps(
+                    {
+                        "lockfileVersion": 3,
+                        "packages": {
+                            "": {"name": "demo-frontend"},
+                            "node_modules/demo-native-binding": {
+                                "optional": True,
+                                "os": ["darwin"],
+                                "cpu": ["arm64"],
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch.object(lib, "_node_platform_tag", return_value=("darwin", "arm64")),
+                mock.patch.object(lib, "run_zsh_shell") as run_zsh_shell_mock,
                 mock.patch.object(lib, "_missing_node_platform_optional_dependencies", side_effect=[
                     ["node_modules/demo-native-binding"],
                     [],
@@ -437,10 +535,10 @@ class FrontendLocalBackendPatchTests(unittest.TestCase):
                     dry_run=False,
                 )
 
-            run_shell_mock.assert_called_once()
-            self.assertIn("npm ci --include=optional", run_shell_mock.call_args.args[0])
-            self.assertTrue(any("本地环境修复" in note for note in summary["notes"]))
-            self.assertEqual(summary["warnings"], [])
+            run_zsh_shell_mock.assert_called_once()
+            self.assertIn("npm ci --include=optional", run_zsh_shell_mock.call_args.args[0])
+            self.assertTrue(any("回退完整依赖修复" in warning for warning in summary["warnings"]))
+            self.assertTrue(any("完整依赖修复" in note for note in summary["notes"]))
 
     def test_prepare_repo_runtime_does_not_install_when_node_modules_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -535,6 +633,34 @@ class FrontendLocalBackendPatchTests(unittest.TestCase):
             self.assertIn("npm ci --include=optional", content)
             self.assertIn("npm run dev -- --port 3110 --strictPort", content)
             self.assertEqual(summary["generated_files"], [".codex/environments/environment.toml"])
+
+    def test_rewrite_node_frontend_environment_wraps_fnm_commands_in_zsh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            (repo_path / "package.json").write_text(
+                '{"name":"demo-frontend","scripts":{"dev":"vite --host 0.0.0.0"},"volta":{"node":"24.14.0"}}',
+                encoding="utf-8",
+            )
+
+            lib._rewrite_node_frontend_environment(
+                {"key": "demo-frontend"},
+                {
+                    "environment_toml": ".codex/environments/environment.toml",
+                    "install_commands": ["npm install"],
+                    "start_commands": ["npm run dev"],
+                },
+                repo_path,
+                assigned_port=3110,
+                dry_run=False,
+            )
+
+            content = (repo_path / ".codex/environments/environment.toml").read_text(encoding="utf-8")
+            parsed = tomllib.loads(content)
+            self.assertIn('script = "zsh -lc ', content)
+            self.assertIn('command = "zsh -lc ', content)
+            self.assertIn("fnm env --shell zsh", content)
+            self.assertTrue(parsed["setup"]["script"].startswith("zsh -lc "))
+            self.assertTrue(parsed["actions"][0]["command"].startswith("zsh -lc "))
 
     def test_rewrite_node_frontend_environment_dry_run_uses_source_package_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1306,15 +1432,46 @@ class PublishTargetTests(unittest.TestCase):
         )
 
     def test_resolve_publish_command_uses_runtime_mode(self) -> None:
+        with mock.patch.object(lib, "resolve_sg_cli_executable", return_value="/tmp/bin/sg"):
+            self.assertEqual(
+                lib.resolve_publish_command({"key": "producer-backend", "runtime": {"mode": "shared-backend-app"}}),
+                ["/tmp/bin/sg", "publish", "jenkins"],
+            )
+            self.assertEqual(
+                lib.resolve_publish_command(
+                    {"key": "pf-mproducer-supplier", "runtime": {"mode": "patch-node-frontend-environment"}}
+                ),
+                ["/tmp/bin/sg", "publish", "local"],
+            )
+
+    def test_resolve_sg_cli_executable_prefers_newer_global_cli(self) -> None:
+        old_sg = Path("/usr/local/bin/sg")
+        new_sg = Path("/Users/demo/.nvm/versions/node/v24.14.0/bin/sg")
+
+        def fake_run(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            version = "0.3.10" if args[0] == str(new_sg) else "0.0.2-alpha.8"
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout=version, stderr="")
+
+        lib.resolve_sg_cli_executable.cache_clear()
+        try:
+            with (
+                mock.patch.object(lib, "_candidate_sg_paths", return_value=[old_sg, new_sg]),
+                mock.patch.object(lib.subprocess, "run", side_effect=fake_run),
+            ):
+                self.assertEqual(lib.resolve_sg_cli_executable(), str(new_sg))
+        finally:
+            lib.resolve_sg_cli_executable.cache_clear()
+
+    def test_publish_command_helpers_accept_absolute_sg_path(self) -> None:
+        command = ["/Users/demo/.nvm/versions/node/v24.14.0/bin/sg", "publish", "local"]
+        self.assertTrue(publish_script.is_sg_publish_command(command, "local"))
+        self.assertTrue(publish_script.should_prepare_frontend_publish_runtime(
+            {"runtime": {"mode": "patch-node-frontend-environment"}},
+            command,
+        ))
         self.assertEqual(
-            lib.resolve_publish_command({"key": "producer-backend", "runtime": {"mode": "shared-backend-app"}}),
-            ["sg", "publish", "jenkins"],
-        )
-        self.assertEqual(
-            lib.resolve_publish_command(
-                {"key": "pf-mproducer-supplier", "runtime": {"mode": "patch-node-frontend-environment"}}
-            ),
-            ["sg", "publish", "local"],
+            publish_script.build_publish_execution_command(command, "24.14.0")[:2],
+            ["zsh", "-lc"],
         )
 
     def test_publish_targets_use_fixed_execution_order(self) -> None:
@@ -1528,6 +1685,33 @@ class PublishTargetTests(unittest.TestCase):
                 )
 
         self.assertEqual(result["status"], "success")
+
+    def test_run_publish_job_accepts_english_success_signal_for_local_publish(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            for output in ["success\n", "status: success\n", '{"status":"success"}\n']:
+                with (
+                    mock.patch.object(
+                        publish_script.subprocess,
+                        "run",
+                        return_value=subprocess.CompletedProcess(
+                            args=["sg", "publish", "local"],
+                            returncode=0,
+                            stdout=output,
+                            stderr="",
+                        ),
+                    ),
+                    mock.patch.object(publish_script, "find_publish_cli_log_entry", return_value=None),
+                ):
+                    result = publish_script.run_publish_job(
+                        {
+                            "repo_key": "demo-repo",
+                            "repo_path": repo_path,
+                            "command": ["sg", "publish", "local"],
+                        }
+                    )
+
+                self.assertEqual(result["status"], "success", output)
 
     def test_run_publish_job_wraps_local_publish_with_repo_node_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

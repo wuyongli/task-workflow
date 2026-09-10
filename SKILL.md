@@ -232,10 +232,15 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_ru
 - 源分支直接使用 `meta.yaml` 记录的任务分支；目标分支使用各仓库远程默认分支，用户明确指定目标分支时才覆盖
 - 未指定 `--title` 时，PR 标题默认按 `任务名（是否有前端/后端）` 生成；括号只基于实际有 diff、准备创建 PR 的仓库集合判断，不基于任务曾经绑定过的全部仓库判断
 - PR 标题里的日期表示本次 PR 操作日 / 预期上线日，不是任务创建日；新建 PR 时通常由 `sg pr create` 按当天自动拼接，已有 PR 或用户指定非当天上线日时，应回读完整标题后最小更新标题开头第一个 `#YYYYMMDD#`
-- 创建前先确认仓库存在、当前分支与 `meta.yaml` 记录分支一致、工作区干净，并用 `sg pr status` 检查当前分支是否已有开放 PR
+- 创建前先确认仓库存在、当前分支与 `meta.yaml` 记录分支一致、工作区干净，并确认当前 Codex 会话实际执行到的全局 `sg` 路径、`sg --version` 和 `sg pr create --help`
+- `sg` CLI 是全局工具，能力检查不按仓库分别判断；但 `sg pr status`、`sg pr create`、`sg pr view` 等具体操作必须在目标仓库根目录执行
+- 如果 `which -a sg` 出现多个候选，优先使用版本更高的 `sg` 绝对路径；如果 `/usr/local/bin/sg` 旧版遮蔽新版，应直接修正入口或使用新版绝对路径，不要让用户手动处理
+- 如果解析到的 `sg pr create --help` 缺少 `--task-link`、`--reviewer`、`--wip` 等当前流程需要的参数，优先判断为 `sg` 路径 / 版本错误，先修正 CLI 入口，不要降级创建一个缺少关联信息的 PR
+- `sg pr create` 参数必须以当前全局新版 `sg pr create --help` 为准；不要凭记忆把 `--task-link` 写成 `--task_link`
 - 源分支尚未推送时，允许先执行普通 `git push -u origin <当前分支>`；不自动提交、不 force-push、不改写历史
-- 默认创建 WIP PR：`sg pr create --target <远程默认分支> --wip`
-- 用户传 `--no-wip`，或明确说“取消 WIP / 不要 WIP / 创建正式 PR”时，调用 `sg pr create` 时省略 `--wip`
+- 默认创建 WIP PR：新版 `sg` 支持时使用 `--wip`
+- 用户传 `--no-wip`，或明确说“取消 WIP / 不要 WIP / 创建正式 PR”时，省略 `--wip`
+- 如果用户提供 `--task-link` 或自然语言里的 BBS 链接，使用新版 `sg` 支持的 `--task-link <BBS链接>` 关联 BBS；如果用户只说 `bbsid: 52040` 这类编号，按既有上下文能确定完整 BBS 链接时再生成 `--task-link`，不要把编号直接传给 `--task-link`
 - `--reviewer` 可重复；取消 WIP 只影响是否追加 `--wip`，不改变目标分支、标题、描述、reviewer 或授权边界
 - 若已有开放 PR，默认输出其状态和链接；如果本次明确是在继续准备上线或重新操作 PR，允许只更新标题中的操作日期 / 上线日期，但不得自动关闭、合并或重试已有 PR
 - 更新已有 PR 标题前必须先用 `sg pr view` 回读完整标题；更新日期时只替换标题开头第一个 `#YYYYMMDD#`，不得替换后续 `#BBS#`；编辑后再次 `sg pr view` 确认完整标题，保留 `WIP:`、BBS 编号、任务名和“有前端/有后端”后缀

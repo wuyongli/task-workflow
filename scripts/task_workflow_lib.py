@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +29,64 @@ PUBLISH_KIND_ORDER = {
     "mobile_frontend": 1,
     "pc_frontend": 2,
 }
+
+
+def _parse_semver(text: str) -> tuple[int, int, int]:
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", text)
+    if not match:
+        return (0, 0, 0)
+    return tuple(int(part) for part in match.groups())
+
+
+def _candidate_sg_paths() -> list[Path]:
+    candidates: list[Path] = []
+    for path_dir in os.environ.get("PATH", "").split(os.pathsep):
+        if not path_dir:
+            continue
+        candidate = Path(path_dir) / "sg"
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            candidates.append(candidate)
+
+    nvm_root = Path.home() / ".nvm" / "versions" / "node"
+    if nvm_root.exists():
+        candidates.extend(path for path in nvm_root.glob("*/bin/sg") if path.exists() and os.access(path, os.X_OK))
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
+
+
+@lru_cache(maxsize=1)
+def resolve_sg_cli_executable() -> str:
+    candidates = _candidate_sg_paths()
+    if not candidates:
+        return "sg"
+
+    scored: list[tuple[tuple[int, int, int], int, Path]] = []
+    for index, candidate in enumerate(candidates):
+        try:
+            result = subprocess.run(
+                [str(candidate), "--version"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        version = _parse_semver("\n".join([result.stdout or "", result.stderr or ""]))
+        scored.append((version, -index, candidate))
+
+    if not scored:
+        return str(candidates[0])
+    scored.sort(reverse=True)
+    return str(scored[0][2])
 
 
 def uses_patch_node_frontend_runtime(repo_cfg: dict[str, Any]) -> bool:
@@ -336,11 +397,12 @@ def resolve_task_publish_repo_key(
 
 def resolve_publish_command(repo_cfg: dict[str, Any]) -> list[str]:
     repo_key = str(repo_cfg.get("key") or "")
+    sg = resolve_sg_cli_executable()
     target_kind = classify_repo_publish_kind(repo_cfg)
     if target_kind == "backend":
-        return ["sg", "publish", "jenkins"]
+        return [sg, "publish", "jenkins"]
     if target_kind in {"mobile_frontend", "pc_frontend"}:
-        return ["sg", "publish", "local"]
+        return [sg, "publish", "local"]
 
     raise ValueError(f"repo {repo_key or '<unknown>'} has no supported publish command mapping")
 
@@ -416,6 +478,14 @@ def run_shell(command: str, dry_run: bool, cwd: Path | None = None) -> None:
     if dry_run:
         return
     subprocess.run(command, shell=True, check=True, text=True, cwd=str(cwd) if cwd else None)
+
+
+def run_zsh_shell(command: str, dry_run: bool, cwd: Path | None = None) -> None:
+    location = f" (cwd={cwd})" if cwd else ""
+    print(f"$ zsh -lc {shlex.quote(command)}{location}")
+    if dry_run:
+        return
+    subprocess.run(["zsh", "-lc", command], check=True, text=True, cwd=str(cwd) if cwd else None)
 
 
 def run_git(repo_path: Path, *args: str) -> str:
@@ -998,6 +1068,10 @@ def _node_frontend_prefix_parts(node_version: str | None) -> list[str]:
     ]
 
 
+def _zsh_shell_command(command: str) -> str:
+    return f"zsh -lc {shlex.quote(command)}"
+
+
 def _node_platform_tag(repo_path: Path, node_version: str | None) -> tuple[str, str]:
     command = " && ".join(_node_frontend_prefix_parts(node_version) + ['node -p "process.platform + \'-\' + process.arch"'])
     result = subprocess.run(
@@ -1051,6 +1125,39 @@ def _missing_node_platform_optional_dependencies(repo_path: Path, platform: str,
     return missing
 
 
+def _node_package_name_from_lock_path(rel_path: str) -> str:
+    prefix = "node_modules/"
+    if not rel_path.startswith(prefix):
+        return rel_path
+    return rel_path.removeprefix(prefix)
+
+
+def _node_optional_dependency_install_specs(repo_path: Path, missing: list[str]) -> list[str]:
+    lock_path = repo_path / "package-lock.json"
+    if not lock_path.exists():
+        return []
+
+    packages = _load_json(lock_path).get("packages") or {}
+    if not isinstance(packages, dict):
+        return []
+
+    specs: list[str] = []
+    for rel_path in missing:
+        package = packages.get(rel_path)
+        if not isinstance(package, dict):
+            continue
+        version = package.get("version")
+        if not isinstance(version, str) or not version.strip():
+            continue
+        specs.append(f"{_node_package_name_from_lock_path(rel_path)}@{version.strip()}")
+    return specs
+
+
+def _node_optional_dependency_targeted_repair_command(specs: list[str]) -> str:
+    quoted_specs = " ".join(shlex.quote(spec) for spec in specs)
+    return f"npm install --no-save --package-lock=false --no-audit --no-fund {quoted_specs}"
+
+
 def resolve_node_version_for_repo(repo_path: Path) -> str | None:
     package_json_path = repo_path / "package.json"
     if not package_json_path.exists():
@@ -1072,8 +1179,12 @@ def _render_node_frontend_environment(
         f"if [ ! -d node_modules ]; then {install_command}; "
         f"elif ! {platform_optional_dependency_check}; then {repair_command}; fi"
     )
-    setup_command = " && ".join(prefix_parts + [install_guard]) if prefix_parts else install_guard
-    start_with_guard = " && ".join(prefix_parts + [install_guard, start_command]) if prefix_parts else f"{install_guard} && {start_command}"
+    if prefix_parts:
+        setup_command = _zsh_shell_command(" && ".join(prefix_parts + [install_guard]))
+        start_with_guard = _zsh_shell_command(" && ".join(prefix_parts + [install_guard, start_command]))
+    else:
+        setup_command = install_guard
+        start_with_guard = f"{install_guard} && {start_command}"
 
     return "\n".join(
         [
@@ -1113,14 +1224,36 @@ def _ensure_node_frontend_native_optional_dependencies(
     if not missing:
         return {"notes": [], "warnings": []}
 
-    repair_command = str(runtime_cfg.get("native_optional_repair_command") or "npm ci --include=optional")
-    command = " && ".join(_node_frontend_prefix_parts(node_version) + [repair_command])
-    run_shell(command, dry_run, repo_path)
-
-    notes = [
-        f"检测到当前 Node 平台 {platform}-{architecture} 缺失原生 optional 依赖，已按本地环境修复：{', '.join(missing)}"
-    ]
+    notes = [f"检测到当前 Node 平台 {platform}-{architecture} 缺失原生 optional 依赖：{', '.join(missing)}"]
     warnings: list[str] = []
+    fallback_repair_command = str(runtime_cfg.get("native_optional_repair_command") or "npm ci --include=optional")
+    install_specs = _node_optional_dependency_install_specs(repo_path, missing)
+    used_fallback = False
+
+    if install_specs:
+        targeted_command = _node_optional_dependency_targeted_repair_command(install_specs)
+        command = " && ".join(_node_frontend_prefix_parts(node_version) + [targeted_command])
+        try:
+            run_zsh_shell(command, dry_run, repo_path)
+            notes.append(f"已按 lockfile 定向修复：{', '.join(install_specs)}")
+        except subprocess.CalledProcessError as exc:
+            warnings.append(f"定向修复原生 optional 依赖失败，回退完整依赖修复：{exc}")
+            used_fallback = True
+
+        if not dry_run and not used_fallback:
+            still_missing_after_targeted = _missing_node_platform_optional_dependencies(repo_path, platform, architecture)
+            if still_missing_after_targeted:
+                warnings.append(f"定向修复后仍缺失，回退完整依赖修复：{', '.join(still_missing_after_targeted)}")
+                used_fallback = True
+    else:
+        warnings.append("无法从 package-lock.json 解析缺失原生 optional 依赖版本，回退完整依赖修复")
+        used_fallback = True
+
+    if used_fallback:
+        command = " && ".join(_node_frontend_prefix_parts(node_version) + [fallback_repair_command])
+        run_zsh_shell(command, dry_run, repo_path)
+        notes.append(f"已执行完整依赖修复：{fallback_repair_command}")
+
     if not dry_run:
         still_missing = _missing_node_platform_optional_dependencies(repo_path, platform, architecture)
         if still_missing:

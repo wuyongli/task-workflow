@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import re
 import shlex
 import subprocess
 import time
@@ -27,6 +28,20 @@ from task_workflow_lib import (
 
 DEFAULT_CONFIG_ROOT = Path("/Users/wuyongli/Documents/sg-project/_workspace/config")
 
+PUBLISH_SUCCESS_OUTPUT_PATTERNS = [
+    re.compile(r"发布成功"),
+    re.compile(r'(?i)"status"\s*:\s*"success"'),
+    re.compile(r"(?im)^\s*(?:status\s*[:=]\s*)?success(?:ful(?:ly)?)?\s*[.!！。]*\s*$"),
+]
+
+
+def is_sg_publish_command(command: list[str], subcommand: str | None = None) -> bool:
+    if len(command) < 3:
+        return False
+    if Path(command[0]).name != "sg" or command[1] != "publish":
+        return False
+    return subcommand is None or command[2] == subcommand
+
 
 def resolve_publish_log_path(cli_home: Path | None = None, now: dt.datetime | None = None) -> Path:
     resolved_cli_home = cli_home or (Path.home() / ".senguo-cli")
@@ -41,7 +56,7 @@ def find_publish_cli_log_entry(
     ended_at_ms: int,
     cli_home: Path | None = None,
 ) -> dict[str, object] | None:
-    if len(command) < 3 or command[0] != "sg" or command[1] != "publish":
+    if not is_sg_publish_command(command):
         return None
 
     log_path = resolve_publish_log_path(cli_home)
@@ -104,20 +119,24 @@ def classify_publish_result(
     if "conflicts:" in combined_lower or "you are still merging" in combined_lower:
         return "failed", "publish output reported merge conflicts"
 
-    is_local_publish = len(command) >= 3 and command[:3] == ["sg", "publish", "local"]
-    explicit_success_output = "发布成功" in combined
+    is_local_publish = is_sg_publish_command(command, "local")
+    explicit_success_output = has_explicit_publish_success_signal(combined)
     if is_local_publish:
         if explicit_success_output:
             return "success", None
         if log_status == "success":
-            return "uncertain", "CLI log marked success, but terminal output had no explicit '发布成功' signal"
+            return "uncertain", "CLI log marked success, but terminal output had no explicit success signal"
         return "uncertain", "no explicit success signal from sg publish local"
 
     return "success", None
 
 
+def has_explicit_publish_success_signal(output: str) -> bool:
+    return any(pattern.search(output) for pattern in PUBLISH_SUCCESS_OUTPUT_PATTERNS)
+
+
 def build_publish_execution_command(command: list[str], node_version: str | None = None) -> list[str]:
-    if command[:3] != ["sg", "publish", "local"] or not node_version:
+    if not is_sg_publish_command(command, "local") or not node_version:
         return command
 
     shell_command = " && ".join(
@@ -131,7 +150,7 @@ def build_publish_execution_command(command: list[str], node_version: str | None
 
 
 def should_prepare_frontend_publish_runtime(repo_cfg: dict[str, object], command: list[str]) -> bool:
-    return command[:3] == ["sg", "publish", "local"] and uses_patch_node_frontend_runtime(repo_cfg)
+    return is_sg_publish_command(command, "local") and uses_patch_node_frontend_runtime(repo_cfg)
 
 
 def read_package_manifest_diff(repo_path: Path) -> set[str]:
