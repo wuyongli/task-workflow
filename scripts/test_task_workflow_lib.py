@@ -3428,6 +3428,87 @@ class NextTaskWorkspaceTests(unittest.TestCase):
                 (task_docs_root / "index.md").read_text(encoding="utf-8"),
             )
 
+    def test_next_task_workspace_uses_max_recorded_phase_when_current_is_historical(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir) / "workspace"
+            docs_root = workspace_root / "_docs"
+            tasks_root = workspace_root / "_tasks"
+            config_root = workspace_root / "config"
+            task_id = "2026-06-03-部门转货"
+            task_docs_root = docs_root / task_id
+            task_code_root = tasks_root / task_id
+            task_docs_root.mkdir(parents=True)
+            task_code_root.mkdir(parents=True)
+            config_root.mkdir(parents=True)
+
+            (config_root / "workspace.yaml").write_text(
+                "\n".join(
+                    [
+                        f'workspace_root: "{workspace_root}"',
+                        f'tasks_root: "{tasks_root}"',
+                        f'docs_root: "{docs_root}"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (task_docs_root / "meta.yaml").write_text(
+                "\n".join(
+                    [
+                        f"task_id: {task_id}",
+                        "status: 开发中",
+                        "resume_status: 开发中",
+                        "coding_allowed: true",
+                        "phase: 3",
+                        "current_task_name: 三期回补",
+                        "active_plan: plan-三期回补.md",
+                        "current_stage:",
+                        "  phase: 3",
+                        "  task_name: 三期回补",
+                        "  status: 开发中",
+                        "  resume_status: 开发中",
+                        "  plan: plan-三期回补.md",
+                        "repos: []",
+                        "previous_phases:",
+                        "- phase: 4",
+                        "  task_name: 四期任务",
+                        "  status: 已完成",
+                        "  resume_status: 已完成",
+                        "  plan: plan-四期任务.md",
+                        "  repos: []",
+                        "- phase: 5",
+                        "  task_name: 五期任务",
+                        "  status: 暂停中",
+                        "  resume_status: 测试中",
+                        "  plan: plan-五期任务.md",
+                        "  repos: []",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (task_docs_root / "index.md").write_text("# 部门转货\n", encoding="utf-8")
+            (task_docs_root / "plan-三期回补.md").write_text("# 三期方案\n", encoding="utf-8")
+
+            with (
+                mock.patch.object(next_script, "run") as run_mock,
+                mock.patch("sys.argv", [
+                    "next_task_workspace.py",
+                    task_id,
+                    "六期任务",
+                    "--config-root",
+                    str(config_root),
+                ]),
+            ):
+                self.assertEqual(next_script.main(), 0)
+
+            run_mock.assert_not_called()
+            meta = lib.load_yaml(task_docs_root / "meta.yaml")
+            self.assertEqual(meta["phase"], 6)
+            self.assertEqual(meta["current_stage"]["phase"], 6)
+            self.assertEqual(meta["previous_phases"][-1]["phase"], 3)
+            self.assertIn("- 当前阶段：第 6 阶段", (task_docs_root / "index.md").read_text(encoding="utf-8"))
+
 
 class CompleteCleanupRuntimeTests(unittest.TestCase):
     def test_complete_task_workspace_stops_runtime_before_marking_complete(self) -> None:

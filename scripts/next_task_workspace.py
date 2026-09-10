@@ -44,6 +44,17 @@ def _coerce_phase(value: Any) -> int:
     return 1
 
 
+def _next_phase_number(meta: dict[str, Any], current_phase: int, previous_phases: list[Any]) -> int:
+    phase_numbers = [current_phase]
+    current_stage = meta.get("current_stage")
+    if isinstance(current_stage, dict):
+        phase_numbers.append(_coerce_phase(current_stage.get("phase")))
+    for phase_item in previous_phases:
+        if isinstance(phase_item, dict):
+            phase_numbers.append(_coerce_phase(phase_item.get("phase")))
+    return max(phase_numbers) + 1
+
+
 def _phase_document_name(base_name: str, task_name: str) -> str:
     path = Path(base_name)
     suffix = path.suffix or ".md"
@@ -349,6 +360,7 @@ def main() -> int:
     previous_phases = meta.get("previous_phases")
     if not isinstance(previous_phases, list):
         previous_phases = []
+    next_phase = _next_phase_number(meta, current_phase, previous_phases)
     previous_phase = {
         "phase": current_phase,
         "task_name": previous_task_name,
@@ -366,7 +378,7 @@ def main() -> int:
     meta["status"] = "方案中"
     meta["resume_status"] = "方案中"
     meta["coding_allowed"] = False
-    meta["phase"] = current_phase + 1
+    meta["phase"] = next_phase
     meta["current_task_name"] = next_task_name
     meta["active_plan"] = next_plan_name
     meta.pop("active_decision_log", None)
@@ -375,7 +387,7 @@ def main() -> int:
     else:
         meta.pop("bbs_id", None)
     meta["current_stage"] = {
-        "phase": current_phase + 1,
+        "phase": next_phase,
         "task_name": next_task_name,
         "status": "方案中",
         "resume_status": "方案中",
@@ -419,7 +431,7 @@ def main() -> int:
             next_plan_name=next_plan_name,
             previous_plan_name=previous_plan_name,
             previous_status_text=_phase_status_text(previous_archive_status, previous_archive_resume_status),
-            phase=current_phase + 1,
+            phase=next_phase,
             bbs_id=next_bbs_id or None,
         ),
         args.dry_run,
