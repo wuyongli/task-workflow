@@ -76,6 +76,27 @@ class SharedBackendComposeNameTests(unittest.TestCase):
 
 
 class ReviewDocumentationTests(unittest.TestCase):
+    def _git(self, repo_path: Path, *args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repo_path), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.rstrip()
+
+    def _commit_file(self, repo_path: Path, relative_path: str, content: str, message: str) -> str:
+        file_path = repo_path / relative_path
+        file_path.write_text(content, encoding="utf-8")
+        self._git(repo_path, "add", relative_path)
+        self._git(repo_path, "commit", "-m", message)
+        return self._git(repo_path, "rev-parse", "HEAD")
+
+    def _init_repo(self, repo_path: Path) -> str:
+        self._git(repo_path, "init", "--initial-branch=master")
+        self._git(repo_path, "config", "user.email", "test@example.com")
+        self._git(repo_path, "config", "user.name", "Test User")
+        return self._commit_file(repo_path, "base.txt", "base\n", "base")
+
     def test_review_docs_separate_blockers_from_quality_optimizations(self) -> None:
         review_text = (Path(__file__).resolve().parents[1] / "references" / "review.md").read_text(encoding="utf-8")
 
@@ -99,6 +120,176 @@ class ReviewDocumentationTests(unittest.TestCase):
             "没有内容的层级可以用一行 `🟢 未发现` 收起",
         ]:
             self.assertIn(expected, review_text)
+
+    def test_native_optional_manifest_blocker_only_covers_changes_from_current_repair(self) -> None:
+        skill_root = Path(__file__).resolve().parents[1]
+        for relative_path in ["references/review.md", "references/runtime.md"]:
+            text = (skill_root / relative_path).read_text(encoding="utf-8")
+            self.assertIn(
+                "本次修复导致 `package.json` 或 `package-lock.json` 产生新变更",
+                text,
+                relative_path,
+            )
+
+    def test_three_dot_review_baseline_excludes_default_branch_only_changes(self) -> None:
+        skill_root = Path(__file__).resolve().parents[1]
+        review_text = (skill_root / "references" / "review.md").read_text(encoding="utf-8")
+        skill_text = (skill_root / "SKILL.md").read_text(encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            base_sha = self._init_repo(repo_path)
+            self._git(repo_path, "update-ref", "refs/remotes/origin/main", base_sha)
+            self._git(
+                repo_path,
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            )
+            self._git(repo_path, "checkout", "-b", "task-local")
+            self._commit_file(repo_path, "task.txt", "task\n", "task change")
+            self._git(repo_path, "checkout", "master")
+            main_sha = self._commit_file(repo_path, "main-only.txt", "main\n", "main change")
+            self._git(repo_path, "update-ref", "refs/remotes/origin/main", main_sha)
+
+            changed_files = self._git(
+                repo_path,
+                "diff",
+                "--name-only",
+                "origin/main...task-local",
+            ).splitlines()
+
+        self.assertEqual(changed_files, ["task.txt"])
+        self.assertIn("git diff origin/<远程主分支>...HEAD", review_text)
+        self.assertIn("`origin/HEAD` 指向的分支", review_text)
+        self.assertIn("三点比较基于 merge-base", review_text)
+        self.assertIn("不会混入远程主分支后续独有的改动", review_text)
+
+        self.assertIn("已提交改动使用三点比较 `origin/<远程主分支>...<本地任务分支>`", skill_text)
+        self.assertIn("不得把两点或两个分支端点直接比较作为任务改动基线", review_text)
+
+    def test_local_task_branch_remains_review_target_when_remote_is_ahead_or_diverged(self) -> None:
+        skill_root = Path(__file__).resolve().parents[1]
+        review_text = (skill_root / "references" / "review.md").read_text(encoding="utf-8")
+        skill_text = (skill_root / "SKILL.md").read_text(encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            self._init_repo(repo_path)
+            self._git(repo_path, "checkout", "-b", "task-local")
+            self._commit_file(repo_path, "task.txt", "local\n", "local task")
+            self._git(repo_path, "checkout", "-b", "remote-task")
+            remote_sha = self._commit_file(repo_path, "remote.txt", "remote\n", "remote task")
+            self._git(repo_path, "update-ref", "refs/remotes/origin/task-local", remote_sha)
+            self._git(repo_path, "checkout", "task-local")
+
+            remote_ahead = self._git(
+                repo_path,
+                "rev-list",
+                "--left-right",
+                "--count",
+                "task-local...origin/task-local",
+            )
+            self.assertEqual(remote_ahead.split(), ["0", "1"])
+
+            self._commit_file(repo_path, "local-only.txt", "local only\n", "local only")
+            diverged = self._git(
+                repo_path,
+                "rev-list",
+                "--left-right",
+                "--count",
+                "task-local...origin/task-local",
+            )
+
+        self.assertEqual(diverged.split(), ["1", "1"])
+        self.assertIn("git rev-list --left-right --count", review_text)
+        self.assertIn("仍以本地任务分支作为审查对象", review_text)
+        self.assertIn("本地任务分支落后或已与远程分叉", review_text)
+        self.assertIn("远程独有提交数", review_text)
+        self.assertIn("远程同名任务分支只用于检查", review_text)
+        self.assertIn("审查对象固定为 `meta.yaml` 记录的本地任务分支", skill_text)
+        self.assertNotIn("才使用远程任务分支", review_text)
+        self.assertNotIn(
+            "git diff origin/<远程主分支>...origin/<任务分支>",
+            review_text,
+        )
+
+    def test_worktree_review_discovers_staged_unstaged_and_untracked_files(self) -> None:
+        review_text = (Path(__file__).resolve().parents[1] / "references" / "review.md").read_text(
+            encoding="utf-8"
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            self._init_repo(repo_path)
+            (repo_path / "base.txt").write_text("unstaged\n", encoding="utf-8")
+            (repo_path / "staged.txt").write_text("staged\n", encoding="utf-8")
+            self._git(repo_path, "add", "staged.txt")
+            (repo_path / "untracked.txt").write_text("untracked\n", encoding="utf-8")
+
+            status = self._git(repo_path, "status", "--short", "--untracked-files=all")
+            staged_files = self._git(repo_path, "diff", "--cached", "--name-only").splitlines()
+            unstaged_files = self._git(repo_path, "diff", "--name-only").splitlines()
+
+        self.assertIn(" M base.txt", status)
+        self.assertIn("A  staged.txt", status)
+        self.assertIn("?? untracked.txt", status)
+        self.assertEqual(staged_files, ["staged.txt"])
+        self.assertEqual(unstaged_files, ["base.txt"])
+        self.assertNotIn("untracked.txt", staged_files + unstaged_files)
+        self.assertIn("git status --short", review_text)
+        self.assertIn("逐个读取任务相关的未跟踪文件", review_text)
+
+
+class VerificationReuseDocumentationTests(unittest.TestCase):
+    def test_verification_contract_is_linked_without_new_user_commands(self) -> None:
+        skill_root = Path(__file__).resolve().parents[1]
+        verification_path = skill_root / "references" / "verification.md"
+
+        self.assertTrue(verification_path.exists(), "references/verification.md must define verification reuse")
+        linked_docs = [
+            skill_root / "SKILL.md",
+            skill_root / "references" / "review.md",
+            skill_root / "references" / "publish-sync.md",
+        ]
+        for path in linked_docs:
+            self.assertIn("verification.md", path.read_text(encoding="utf-8"), str(path))
+
+        all_instruction_text = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in [skill_root / "SKILL.md", *sorted((skill_root / "references").glob("*.md"))]
+        )
+        for command in ["/task-workflow verify", "/task-workflow record", "/task-workflow invalidate"]:
+            self.assertNotIn(command, all_instruction_text)
+
+    def test_verification_reuse_does_not_override_fresh_evidence_gate(self) -> None:
+        skill_root = Path(__file__).resolve().parents[1]
+        verification_text = (skill_root / "references" / "verification.md").read_text(encoding="utf-8")
+
+        for conflicting_rule in [
+            "不要求在当前消息重新执行同一命令",
+            "通用 Gate 中的 `RUN`",
+        ]:
+            self.assertNotIn(conflicting_rule, verification_text)
+
+        self.assertIn("跨消息记录只能作为历史事实", verification_text)
+        self.assertIn("不能替代当前消息要求的新鲜验证", verification_text)
+
+    def test_openai_ui_metadata_is_concise(self) -> None:
+        metadata_path = Path(__file__).resolve().parents[1] / "agents" / "openai.yaml"
+        metadata_values = {}
+        for line in metadata_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("short_description:", "default_prompt:")):
+                key, raw_value = stripped.split(":", 1)
+                metadata_values[key] = json.loads(raw_value.strip())
+
+        short_description = metadata_values["short_description"]
+        default_prompt = metadata_values["default_prompt"]
+        self.assertGreaterEqual(len(short_description), 25)
+        self.assertLessEqual(len(short_description), 64)
+        self.assertIn("$task-workflow", default_prompt)
+        self.assertLessEqual(len(default_prompt), 180)
 
 
 class StartRepoRuntimeTests(unittest.TestCase):
@@ -418,9 +609,7 @@ class FrontendLocalBackendPatchTests(unittest.TestCase):
                     [],
                     [],
                 ]),
-                mock.patch("subprocess.run") as subprocess_run_mock,
             ):
-                subprocess_run_mock.return_value.stdout = ""
                 summary = lib.prepare_repo_runtime(
                     {
                         "key": "demo-frontend",
@@ -513,9 +702,7 @@ class FrontendLocalBackendPatchTests(unittest.TestCase):
                     ["node_modules/demo-native-binding"],
                     [],
                 ]),
-                mock.patch("subprocess.run") as subprocess_run_mock,
             ):
-                subprocess_run_mock.return_value.stdout = ""
                 summary = lib.prepare_repo_runtime(
                     {
                         "key": "demo-frontend",
@@ -539,6 +726,105 @@ class FrontendLocalBackendPatchTests(unittest.TestCase):
             self.assertIn("npm ci --include=optional", run_zsh_shell_mock.call_args.args[0])
             self.assertTrue(any("回退完整依赖修复" in warning for warning in summary["warnings"]))
             self.assertTrue(any("完整依赖修复" in note for note in summary["notes"]))
+
+    def test_prepare_native_optional_runtime_allows_successful_fallback_with_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            (repo_path / "node_modules").mkdir()
+            (repo_path / "package-lock.json").write_text(
+                json.dumps(
+                    {
+                        "lockfileVersion": 3,
+                        "packages": {
+                            "node_modules/demo-native-binding": {
+                                "optional": True,
+                                "os": ["darwin"],
+                                "cpu": ["arm64"],
+                                "version": "1.2.3",
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch.object(lib, "_node_platform_tag", return_value=("darwin", "arm64")),
+                mock.patch.object(lib, "run_zsh_shell") as run_zsh_shell_mock,
+                mock.patch.object(
+                    lib,
+                    "_missing_node_platform_optional_dependencies",
+                    side_effect=[
+                        ["node_modules/demo-native-binding"],
+                        ["node_modules/demo-native-binding"],
+                        [],
+                    ],
+                ),
+            ):
+                summary = lib.prepare_node_frontend_native_optional_runtime(
+                    {
+                        "key": "demo-frontend",
+                        "runtime": {"mode": "patch-node-frontend-environment"},
+                    },
+                    repo_path,
+                    dry_run=False,
+                )
+
+            self.assertEqual(run_zsh_shell_mock.call_count, 2)
+            self.assertIn("npm install --no-save --package-lock=false", run_zsh_shell_mock.call_args_list[0].args[0])
+            self.assertIn("npm ci --include=optional", run_zsh_shell_mock.call_args_list[1].args[0])
+            self.assertFalse(summary["blocking"])
+            self.assertTrue(any("定向修复后仍缺失" in warning for warning in summary["warnings"]))
+
+    def test_prepare_native_optional_runtime_ignores_preexisting_lockfile_diff_unchanged_by_repair(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            (repo_path / "node_modules").mkdir()
+            lockfile_path = repo_path / "package-lock.json"
+            lockfile = {
+                "lockfileVersion": 3,
+                "packages": {
+                    "node_modules/demo-native-binding": {
+                        "optional": True,
+                        "os": ["darwin"],
+                        "cpu": ["arm64"],
+                        "version": "1.2.3",
+                    },
+                },
+            }
+            lockfile_path.write_text(json.dumps(lockfile), encoding="utf-8")
+            subprocess.run(["git", "init", "-q"], cwd=repo_path, check=True)
+            subprocess.run(["git", "config", "user.email", "codex@example.com"], cwd=repo_path, check=True)
+            subprocess.run(["git", "config", "user.name", "Codex"], cwd=repo_path, check=True)
+            subprocess.run(["git", "add", "package-lock.json"], cwd=repo_path, check=True)
+            subprocess.run(["git", "commit", "-qm", "initial"], cwd=repo_path, check=True)
+            lockfile["existing_business_change"] = True
+            lockfile_path.write_text(json.dumps(lockfile), encoding="utf-8")
+
+            with (
+                mock.patch.object(lib, "_node_platform_tag", return_value=("darwin", "arm64")),
+                mock.patch.object(lib, "run_zsh_shell"),
+                mock.patch.object(
+                    lib,
+                    "_missing_node_platform_optional_dependencies",
+                    side_effect=[
+                        ["node_modules/demo-native-binding"],
+                        [],
+                        [],
+                    ],
+                ),
+            ):
+                summary = lib.prepare_node_frontend_native_optional_runtime(
+                    {
+                        "key": "demo-frontend",
+                        "runtime": {"mode": "patch-node-frontend-environment"},
+                    },
+                    repo_path,
+                    dry_run=False,
+                )
+
+            self.assertFalse(summary["blocking"])
+            self.assertFalse(any("package-lock.json 出现变更" in warning for warning in summary["warnings"]))
 
     def test_prepare_repo_runtime_does_not_install_when_node_modules_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1747,7 +2033,7 @@ class PublishTargetTests(unittest.TestCase):
         self.assertEqual(find_log.call_args.args[1], ["sg", "publish", "local"])
         self.assertEqual(result["status"], "success")
 
-    def test_run_publish_job_prepares_patch_node_frontend_native_optional_before_local_publish(self) -> None:
+    def test_run_publish_job_continues_after_successful_native_optional_fallback_warning(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir)
             call_order: list[str] = []
@@ -1757,7 +2043,12 @@ class PublishTargetTests(unittest.TestCase):
                 self.assertEqual(repo_cfg["key"], "pf-mproducer-supplier")
                 self.assertEqual(path, repo_path)
                 self.assertFalse(dry_run)
-                return {"skipped": False, "blocking": False, "notes": ["native optional dependencies repaired"], "warnings": []}
+                return {
+                    "skipped": False,
+                    "blocking": False,
+                    "notes": ["native optional dependencies repaired"],
+                    "warnings": ["targeted repair failed; fallback succeeded"],
+                }
 
             def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
                 call_order.append("publish")
@@ -1790,6 +2081,7 @@ class PublishTargetTests(unittest.TestCase):
         self.assertEqual(call_order, ["prepare", "publish"])
         self.assertEqual(result["status"], "success")
         self.assertFalse(result["runtime_prepare"]["skipped"])
+        self.assertEqual(result["runtime_prepare"]["warnings"], ["targeted repair failed; fallback succeeded"])
 
     def test_run_publish_job_does_not_prepare_backend_publish(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

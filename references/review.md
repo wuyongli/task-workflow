@@ -1,6 +1,6 @@
 # Review / Codeview
 
-用于任务开发完成或准备上线前，对当前任务改动做代码审查、项目规则审查、对抗式审查，并收敛测试代码。
+用于任务开发完成或准备上线前，在同一次审查中的三个维度完成通用代码审查、对抗式审查和测试代码收敛。
 
 显式命令：
 
@@ -19,14 +19,52 @@
 
 1. 先按 Load 协议恢复 `meta.yaml -> index.md -> plan.md -> progress.md`
 2. 确认当前任务目标、当前阶段、绑定仓库、记录分支和当前工作区状态
-3. 对每个目标仓库先 `fetch origin --prune`，再用远程默认分支对比当前任务分支，优先使用 `origin/master...HEAD` 或实际远程默认分支
+3. 对每个目标仓库先 `fetch origin --prune`，解析该仓库的远程主分支，再按下文“审查基线”与 `meta.yaml` 记录的本地任务分支做三点比较
 4. 先看文件清单、diff stat 和任务相关路径，再决定是否需要阅读全文；长生命周期或大 diff 任务要先收敛 review scope
 5. 查找并读取项目级 review 规则；有则执行，无则说明未发现项目级 review 规则
-6. 前端仓库先按项目类型选择验证前置：配置为 `patch-node-frontend-environment` 时，跑 Vitest / `npm run typecheck` / `npm run build:*` 前自动执行 `prepare_task_runtime.py <task-id> --repo <目标前端>`；小程序等未配置该 runtime 的前端按项目既有编译、预览或上传流程验证
-7. 做通用 code review
-8. 做对抗式审查
-9. 做测试代码收敛审查
-10. 按固定输出层级输出审查总览、阻塞问题、非阻塞风险、代码质量优化、测试收敛建议和验证建议；每个结论层级必须带红 / 黄 / 绿状态点
+6. 先按 [verification.md](verification.md) 检查本轮已执行验证和跨消息历史记录，识别当前主张所需的最小充分验证；`fetch` 后远程主分支前移时只刷新 diff、冲突风险和兼容性等基线检查
+7. 基于同一份 scope 和 diff 完成通用 code review、对抗式审查、测试代码收敛三个维度，不在维度之间重复读取完整 diff
+8. 只有确实需要执行新的前端验证时，才按 [runtime.md](runtime.md) 使用项目 Node 直接运行最快目标命令；`node_modules` 不存在或命令报 native binding 缺失时，再执行 `prepare_task_runtime.py <task-id> --repo <目标前端>` 后重试。小程序等未配置该 runtime 的前端按项目既有流程验证
+9. 按固定输出层级输出审查总览、阻塞问题、非阻塞风险、代码质量优化、测试收敛建议和验证建议；每个结论层级必须带红 / 黄 / 绿状态点
+
+## 审查基线
+
+已提交的任务改动以远程主分支和本地任务分支的三点比较为准。远程主分支是 `origin/HEAD` 指向的分支，不硬编码为 `master` 或 `main`；按 `task_workflow_lib.resolve_origin_default_branch(...)` 的现有规则解析，无法确定时阻断该仓库审查并提示。当前分支与 `meta.yaml` 记录的任务分支一致时执行：
+
+```bash
+git fetch origin --prune
+git diff --stat origin/<远程主分支>...HEAD
+git diff --name-only origin/<远程主分支>...HEAD
+git diff origin/<远程主分支>...HEAD
+```
+
+三点比较基于 merge-base，等价于比较“共同祖先到任务分支”，不会混入远程主分支后续独有的改动。远程主分支前进时仍使用三点比较；不要仅因此改成另一套基线或重复计算共同祖先。
+
+不得把两点或两个分支端点直接比较作为任务改动基线，例如 `git diff origin/<远程主分支>..<任务分支>` 或 `git diff origin/<远程主分支> <任务分支>`；它们比较两个当前 tree，可能把主线独有改动显示成反向差异。
+
+审查对象固定为 `meta.yaml` 记录的本地任务分支。若本地任务分支不存在，阻断该仓库审查并提示，不改用远程同名任务分支。`fetch` 后如果远程同名任务分支存在，远程同名任务分支只用于检查两者关系：
+
+```bash
+git rev-list --left-right --count <任务分支>...origin/<任务分支>
+```
+
+输出的两个数字依次表示本地独有提交数和远程独有提交数。本地任务分支落后或已与远程分叉时，明确提示远程独有提交数，但仍以本地任务分支作为审查对象，不自动切换、拉取或改用远程分支。
+
+当前 `HEAD` 不在记录任务分支上时，不要把当前分支当任务改动；使用已经确认存在的任务分支引用：
+
+```bash
+git diff origin/<远程主分支>...<任务分支>
+```
+
+分支级三点 diff 只覆盖已提交内容。当前工作区位于记录任务分支时，先读取完整状态，再补充检查已暂存和未暂存 diff：
+
+```bash
+git status --short --untracked-files=all
+git diff --cached
+git diff
+```
+
+`git status --short --untracked-files=all` 用于发现全部 staged、unstaged 和 `??` 未跟踪文件；`git diff --cached` 与 `git diff` 分别读取已暂存和未暂存内容。两种 diff 都不显示未跟踪文件，必须根据 status 逐个读取任务相关的未跟踪文件。工作区内容是任务分支已提交 diff 的补充，不替代三点基线。当前 `HEAD` 与记录任务分支不一致时，不把当前工作区改动归入任务范围，只报告分支与工作区状态不一致。
 
 ## 输出层级
 
@@ -74,12 +112,22 @@ Review 输出必须先给一行总览状态，再展开明细，方便快速扫�
 
 ## 前端验证前置
 
-- 只有目标前端配置了 `patch-node-frontend-environment`，且 review 需要执行 Vitest、`npm run typecheck`、`npm run build:*` 时，才先执行 runtime prepare；这是 AI 自动完成的验证前置步骤，不需要用户手动触发
+- 先判断本轮是否已经完成同一前端验证；本轮已执行且之后没有失效操作时不检查 runtime，也不执行 prepare
+- 只有目标前端配置了 `patch-node-frontend-environment` 且确实需要新跑 Vitest、`npm run typecheck` 或 `npm run build:*` 时，才使用项目 Node 执行 `node -p 'process.arch'` 后直接运行最快目标验证
+- `node_modules` 不存在或目标命令出现 native binding 缺失时，才执行 runtime prepare；这是 AI 自动完成的恢复步骤，不需要用户手动触发
 - 小程序 / 微信开发者工具类前端不强制 runtime prepare；按项目已有的 `wechatide` 编译、预览、上传或仓库脚本验证，缺少 Node native optional 依赖时再判断是否需要按本地环境问题处理
 - runtime prepare 成功后，必须重新执行原始验证命令；不能继续沿用 prepare 前的 native 缺包错误作为最终结论
-- 只有 runtime prepare 失败、修复后仍缺失当前平台 optional native 包，或 `package.json` / `package-lock.json` 出现 diff 时，才把它列为验证环境阻断
-- 如果出现锁文件变化，只报告为本地环境修复异常；不要提交、不要自动回滚业务改动，先展示 `git diff -- package.json package-lock.json`
+- 只有 runtime prepare 失败、修复后仍缺失当前平台 optional native 包，或本次修复导致 `package.json` 或 `package-lock.json` 产生新变更时，才把它列为验证环境阻断
+- 如果本次修复导致锁文件变化，只报告为本地环境修复异常；不要提交、不要自动回滚修复前已有的业务改动，先展示 `git diff -- package.json package-lock.json`
 - Review 报告里的“测试与验证”必须说明 runtime prepare 是已执行、不适用，还是因项目配置缺失未执行；未执行或不适用时，不能把 `@rolldown` / `@typescript` native 缺包写成最终发布验证阻断
+
+## 验证去重与顺序
+
+- Review 先读取 [verification.md](verification.md)；同一轮响应内已经通过且未失效的验证直接用于后续步骤，不得因为进入 Review 或切换审查维度机械重跑
+- 跨消息记录只作为历史事实和本轮验证范围选择依据；需要当前通过 / 完成结论时，仍按通用完成验证规则执行当前消息所需验证
+- `eslint --fix` 等修复型命令和 formatter 必须在最终验证前；如果它们实际改写文件，之前相关验证失效
+- 本轮验证后只做只读分析、任务文档更新、提交、推送或创建 PR，且相关 tree 未变化时，不重复运行同一验证
+- 报告中分别列出本轮新执行、历史记录和仍未执行的验证，不把历史记录伪装成本轮新执行
 
 ## 对抗式审查
 

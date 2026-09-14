@@ -1,6 +1,6 @@
 ---
 name: task-workflow
-description: "用于 /Users/wuyongli/Documents/sg-project/_workspace 任务工作区相关场景：创建/恢复/继续任务、更新进度、代码审查/codeview、创建合并请求、收敛测试代码、发布、同步远程主线、删除本地 develop 分支、切换本地 MySQL 数据目录、查看任务开发地址或端口、开启下一阶段、切换阶段、完成或清理任务。"
+description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的多仓任务创建、恢复、代码审查、重复验证、PR、发布、同步或阶段切换时使用。"
 ---
 
 # 任务工作流
@@ -55,6 +55,7 @@ description: "用于 /Users/wuyongli/Documents/sg-project/_workspace 任务工�
 - 阶段化、`next`、产品子任务拆分规则见 [stages.md](references/stages.md)
 - 发布、同步和目标识别规则见 [publish-sync.md](references/publish-sync.md)
 - runtime、后端测试环境和配置字段见 [runtime.md](references/runtime.md)
+- 开发、Review、提交、推送、PR 和发布之间的验证去重与历史证据见 [verification.md](references/verification.md)
 
 ### 1. Init
 
@@ -315,8 +316,9 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_mys
 执行规则：
 - 用户说“代码审查”“检查代码改动”“收敛测试代码”“一次性测试可以去掉”时，按 `review` 处理
 - 先恢复任务上下文，再基于真实 diff、真实项目规则和真实代码路径审查
-- 如果 review 目标是配置为 `patch-node-frontend-environment` 的前端，跑 Vitest / `npm run typecheck` / `npm run build:*` 前先自动执行 `prepare_task_runtime.py <task-id> --repo <目标前端>`；小程序等未配置该 runtime 的前端不强制 prepare
-- 默认做三轮：通用 code review、对抗式审查、测试代码收敛审查
+- 审查对象固定为 `meta.yaml` 记录的本地任务分支；先解析每个仓库的远程主分支，已提交改动使用三点比较 `origin/<远程主分支>...<本地任务分支>`，远程同名任务分支只用于提示本地落后或分叉，不替代审查对象；工作区 staged / unstaged / untracked 改动另行补充检查
+- 先按 [verification.md](references/verification.md) 判断本轮验证是否已经覆盖当前主张，并用跨消息历史记录收敛本轮验证范围；只有确实需要新跑前端验证时，才按 [runtime.md](references/runtime.md) 使用项目 Node 直接运行最快目标命令，并在 `node_modules` 不存在或出现 native binding 缺失时自动 prepare
+- 默认完成同一次审查中的三个维度：通用 code review、对抗式审查、测试代码收敛审查；不为切换维度重复读取 diff 或重复运行测试
 - 默认只输出结论，不改代码；用户明确授权“明确问题直接修”“测试代码可以收敛/删除”时才修改
 - 详细流程和判断标准见 [review.md](references/review.md)
 
@@ -349,11 +351,11 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_mys
 
 ### 后端测试环境
 
-适用于 `producer-backend` 任务工作区。优先在当前任务自己的后端仓库根目录运行测试；宿主机依赖不完整时切换到当前任务 Docker app 容器，不要误用共享主仓容器。详细命令见 [runtime.md](references/runtime.md)。
+适用于 `producer-backend` 任务工作区。优先在当前任务自己的后端仓库根目录运行测试；已知宿主机依赖不完整或 Python 版本不匹配时，直接切换到当前任务 Docker app 容器，不重复制造相同的宿主失败，不要误用共享主仓容器。详细命令见 [runtime.md](references/runtime.md)。
 
 ### 前端验证环境
 
-配置为 `patch-node-frontend-environment` 的前端，在 Vitest / `npm run typecheck` / `npm run build:*` 前，先按 [runtime.md](references/runtime.md) 准备项目声明的 Node 版本和当前平台原生 optional 依赖；`sg publish local` 前只做原生 optional 依赖准备，不做完整 runtime prepare。小程序 / 微信开发者工具类前端按项目现有编译、预览或上传流程验证，不因为未执行 runtime prepare 就阻断 review。`@rolldown/binding-darwin-*`、`@typescript/typescript-darwin-*` 缺失默认按本地设备 / Node 架构问题处理，不当成业务代码失败。
+配置为 `patch-node-frontend-environment` 的前端，只有需要新跑 Vitest / `npm run typecheck` / `npm run build:*` 时，才按 [runtime.md](references/runtime.md) 使用项目 Node、确认 `process.arch` 并直接运行最快目标验证；仅 `node_modules` 不存在或命令出现 native binding 缺失时执行 runtime prepare。`sg publish local` 前只做原生 optional 依赖准备，不做完整 runtime prepare。小程序 / 微信开发者工具类前端按项目现有编译、预览或上传流程验证，不因为未执行 runtime prepare 就阻断 review。`@rolldown/binding-darwin-*`、`@typescript/typescript-darwin-*` 缺失默认按本地设备 / Node 架构问题处理，不当成业务代码失败。
 
 ### 11. Complete
 

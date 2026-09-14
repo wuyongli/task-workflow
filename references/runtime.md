@@ -8,6 +8,7 @@
 - 后端测试优先在当前任务自己的后端仓库根目录运行
 - 如果宿主机 Python 依赖已经可用，可以先用 `python3 -m pytest ...`
 - 如果宿主机依赖不完整、Python 版本不匹配，或测试涉及运行时依赖，切换到当前任务 Docker app 容器
+- 同一任务中已经确认宿主 pytest 会因缺依赖或 Python 版本失败时，后续直接使用当前任务 Docker，不重复执行已知会失败的宿主命令
 - 不要用共享主仓 `producer-backend` 容器验证任务 clone，除非已经确认该容器挂载的就是当前任务代码目录
 - 任务 app 容器由当前任务仓库的 `docker/.task.env` 和 `docker/docker-compose.task.yml` 定义，测试时应在任务后端仓库根目录执行
 - 同一任务绑定多个后端时，每个后端使用“任务 ID + repo key”生成独立 `COMPOSE_PROJECT_NAME`；容器、volume 挂载和停止命令互不复用
@@ -28,12 +29,14 @@ docker compose --env-file docker/.env --env-file docker/.task.env \
 
 规则：
 - 前端 Vitest、`npm run typecheck`、本地启动前，先使用项目声明的 Node 版本；有 `.nvmrc` 优先 `.nvmrc`，否则使用 `package.json` 的 `volta.node`
+- 用项目 Node 执行 `node -p 'process.arch'` 记录实际架构，随后直接运行最快的目标验证，不先做多轮依赖探测
+- 只有 `node_modules` 不存在，或目标命令实际报当前平台 native binding 缺失时，才执行相应的 prepare；其它业务测试失败直接按测试失败处理
 - `sg publish local` 前只做当前平台原生 optional 依赖准备，不做完整 runtime prepare，避免发布前置动作改写本地端口、代理或 `environment.toml`
 - `@rolldown/binding-darwin-*`、`@typescript/typescript-darwin-*`、`@parcel/watcher-*`、`lightningcss-*`、`sass-embedded-*` 这类包属于平台原生 optional dependency；缺失通常是本地设备 / Node 架构漂移，不是业务代码失败
 - 如果已有 `node_modules`，且 `package-lock.json` 声明的当前平台 optional native 包缺失，`prepare_task_runtime.py` 会先从 lockfile 解析缺失包版本，并定向执行 `npm install --no-save --package-lock=false --no-audit --no-fund <name@version...>`
 - 只有无法从 lockfile 解析缺失包版本、定向修复失败，或定向修复后仍缺包时，才回退执行完整依赖修复命令
 - 如果 `node_modules` 不存在，仍按仓库配置的 `install_commands` 首次安装；不要把新任务创建变成默认安装业务依赖
-- 本地修复只允许影响 `node_modules`；如果修复后 `package.json` 或 `package-lock.json` 出现 diff，必须视为异常，不能作为业务改动提交
+- 本地修复只允许影响 `node_modules`；如果本次修复导致 `package.json` 或 `package-lock.json` 产生新变更，必须视为异常，不能作为业务改动提交
 - 不要用切换到另一种架构的 Node 来掩盖问题；最终验证必须回到项目声明 Node 版本和用户默认前端命令
 - `publish_task_workspace.py` 会在配置为 `patch-node-frontend-environment` 的前端发布前自动执行当前平台原生 optional 依赖准备；不需要用户手动先跑修复命令
 

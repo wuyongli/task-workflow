@@ -1209,23 +1209,33 @@ def _ensure_node_frontend_native_optional_dependencies(
     repo_path: Path,
     node_version: str | None,
     dry_run: bool,
-) -> dict[str, list[str]]:
+) -> dict[str, Any]:
     if runtime_cfg.get("repair_native_optional_dependencies") is False:
-        return {"notes": [], "warnings": []}
+        return {"notes": [], "warnings": [], "blocking": False}
     if not (repo_path / "node_modules").is_dir() or not (repo_path / "package-lock.json").exists():
-        return {"notes": [], "warnings": []}
+        return {"notes": [], "warnings": [], "blocking": False}
 
     try:
         platform, architecture = _node_platform_tag(repo_path, node_version)
     except (subprocess.CalledProcessError, ValueError) as exc:
-        return {"notes": [], "warnings": [f"无法确认 Node 平台，跳过前端原生 optional 依赖修复：{exc}"]}
+        return {
+            "notes": [],
+            "warnings": [f"无法确认 Node 平台，跳过前端原生 optional 依赖修复：{exc}"],
+            "blocking": True,
+        }
 
     missing = _missing_node_platform_optional_dependencies(repo_path, platform, architecture)
     if not missing:
-        return {"notes": [], "warnings": []}
+        return {"notes": [], "warnings": [], "blocking": False}
 
+    manifest_paths = [repo_path / "package.json", repo_path / "package-lock.json"]
+    manifest_state_before = {
+        path.name: path.read_bytes() if path.exists() else None
+        for path in manifest_paths
+    } if not dry_run else {}
     notes = [f"检测到当前 Node 平台 {platform}-{architecture} 缺失原生 optional 依赖：{', '.join(missing)}"]
     warnings: list[str] = []
+    blocking = False
     fallback_repair_command = str(runtime_cfg.get("native_optional_repair_command") or "npm ci --include=optional")
     install_specs = _node_optional_dependency_install_specs(repo_path, missing)
     used_fallback = False
@@ -1258,21 +1268,21 @@ def _ensure_node_frontend_native_optional_dependencies(
         still_missing = _missing_node_platform_optional_dependencies(repo_path, platform, architecture)
         if still_missing:
             warnings.append(f"前端原生 optional 依赖修复后仍缺失：{', '.join(still_missing)}")
+            blocking = True
 
-        diff_result = subprocess.run(
-            ["git", "-C", str(repo_path), "diff", "--name-only", "--", "package.json", "package-lock.json"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        changed = [line for line in diff_result.stdout.splitlines() if line.strip()]
+        changed = [
+            path.name
+            for path in manifest_paths
+            if manifest_state_before[path.name] != (path.read_bytes() if path.exists() else None)
+        ]
         if changed:
             warnings.append(
                 "本地依赖修复后 package.json/package-lock.json 出现变更，必须视为异常处理，不要作为业务代码提交："
                 + ", ".join(changed)
             )
+            blocking = True
 
-    return {"notes": notes, "warnings": warnings}
+    return {"notes": notes, "warnings": warnings, "blocking": blocking}
 
 
 def prepare_node_frontend_native_optional_runtime(
@@ -1292,7 +1302,7 @@ def prepare_node_frontend_native_optional_runtime(
     warnings = list(summary.get("warnings") or [])
     return {
         "skipped": False,
-        "blocking": bool(warnings),
+        "blocking": bool(summary.get("blocking")),
         "notes": list(summary.get("notes") or []),
         "warnings": warnings,
     }
