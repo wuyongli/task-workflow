@@ -1760,6 +1760,48 @@ class PublishTargetTests(unittest.TestCase):
             ["zsh", "-lc"],
         )
 
+    def test_find_publish_cli_log_entry_matches_current_repo_command_and_time(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cli_home = Path(tmpdir) / ".senguo-cli"
+            repo_path = Path(tmpdir) / "task-repo"
+            current_entry = {
+                "id": "current",
+                "command": "publish",
+                "subCommand": "local",
+                "workingDir": str(repo_path),
+                "timestamp": 2_000,
+                "status": "success",
+            }
+            log_path = publish_script.resolve_publish_log_path(cli_home=cli_home)
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                json.dumps(
+                    [
+                        {**current_entry, "id": "stale", "timestamp": 400},
+                        current_entry,
+                        {
+                            **current_entry,
+                            "id": "other-repo",
+                            "workingDir": str(repo_path.parent / "other-repo"),
+                            "timestamp": 2_200,
+                        },
+                        {**current_entry, "id": "other-subcommand", "subCommand": "jenkins", "timestamp": 2_300},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            entry = publish_script.find_publish_cli_log_entry(
+                repo_path,
+                ["sg", "publish", "local"],
+                started_at_ms=1_500,
+                ended_at_ms=2_500,
+                cli_home=cli_home,
+            )
+
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry["id"], "current")
+
     def test_publish_targets_use_fixed_execution_order(self) -> None:
         ordered = lib.ordered_target_kinds(["pc_frontend", "mobile_frontend", "backend"])
         self.assertEqual(ordered, ["backend", "mobile_frontend", "pc_frontend"])
@@ -2169,7 +2211,7 @@ class PublishTargetTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn("package-lock.json", "; ".join(result["runtime_prepare"]["warnings"]))
 
-    def test_run_publish_job_keeps_cli_log_success_as_uncertain_without_terminal_signal(self) -> None:
+    def test_run_publish_job_accepts_matched_cli_log_success_without_terminal_signal(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir)
             with (
@@ -2197,8 +2239,8 @@ class PublishTargetTests(unittest.TestCase):
                     }
                 )
 
-        self.assertEqual(result["status"], "uncertain")
-        self.assertIn("CLI log marked success", result["error_message"])
+        self.assertEqual(result["status"], "success")
+        self.assertIsNone(result["error_message"])
 
 
 class SyncTaskTests(unittest.TestCase):

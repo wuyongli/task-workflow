@@ -125,7 +125,7 @@ def classify_publish_result(
         if explicit_success_output:
             return "success", None
         if log_status == "success":
-            return "uncertain", "CLI log marked success, but terminal output had no explicit success signal"
+            return "success", None
         return "uncertain", "no explicit success signal from sg publish local"
 
     return "success", None

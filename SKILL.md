@@ -191,7 +191,8 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_ru
 - 发布目标按当前任务绑定仓库动态识别，不依赖固定中文名称
 - 多目标发布默认并行；单个目标失败不阻断其它目标
 - 配置为 `patch-node-frontend-environment` 的前端，执行 `sg publish local` 前只自动准备当前 Node 平台缺失的原生 optional 依赖；不要执行完整 runtime prepare，避免改写端口、代理或 `environment.toml`
-- 不能只看退出码；必须看终端明确成功信号和错误信息
+- 不能只看退出码；前端以明确终端成功信号，或退出码为 0 且精确匹配本次执行的 CLI `status: success` 日志作为 CLI 发布成功证据
+- 缺少两种成功信号时标记为 `UNCERTAIN` 并停止，不自动重复发布
 - `sg publish` 停在 `develop` 合并冲突时，保留冲突现场并优先在 `develop` 自动解决明确冲突
 - 从 `develop` 重试发布成功后，必须切回 `meta.yaml` 记录的任务分支
 

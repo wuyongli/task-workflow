@@ -79,7 +79,8 @@ sg pr create --target master --title "采购优化（有前端）" --reviewer al
 - 配置为 `patch-node-frontend-environment` 的前端仓库，执行 `sg publish local` 前只自动执行当前平台原生 optional 依赖准备；这是本地发布环境准备，不是业务代码改动
 - 发布前不要调用完整 runtime prepare；不要在 publish preflight 中生成端口、改写前端代理或重写 `environment.toml`
 - 如果原生 optional 依赖准备报错、修复后仍缺当前平台原生 optional 依赖，或导致 `package.json` / `package-lock.json` 产生新 diff，停止发布该仓库并展示 prepare 错误，不继续执行 `sg publish local`
-- 前端发布不能只看 `sg publish local` 的退出码；应优先以终端输出里的明确成功信号作为依据，例如 `发布成功`、单独一行 `success`、`status: success` 或 JSON `{"status":"success"}`；CLI 日志只作为失败证据和辅助判断
+- 前端发布不能只看 `sg publish local` 的退出码；终端输出含 `发布成功`、单独一行 `success`、`status: success` 或 JSON `{"status":"success"}` 时视为成功；终端成功提示被非交互环境静默时，退出码为 0 且按命令、子命令、仓库路径和本次执行时间精确匹配的 CLI 日志记录为 `status: success`，也视为 CLI 发布成功
+- 退出码为 0，但既没有明确终端成功信号，也没有本次精确匹配的 CLI 成功日志时，结果为 `UNCERTAIN`；只展示缺失的证据，不自动重复发布
 - 后端发布也应优先看终端中的明确成功信号；如果没有明确成功信号，或 CLI 日志记录为失败，就不能汇报为 `OK`
 - 某个目标发布失败时，不应阻断其它目标；应继续完成其它目标，并明确展示失败仓库的错误信息
 - 普通发布失败后，默认停在“展示失败信息”这一步，不自动进入修代码、补提交或重试发布
