@@ -105,19 +105,41 @@ class ReviewDocumentationTests(unittest.TestCase):
             "非阻塞风险",
             "代码质量优化",
             "测试代码收敛",
-            "审查总览：🔴 阻塞",
-            "审查总览：🟡 有注意项",
-            "审查总览：🟢 完全通过",
-            "绿色只表示完全没有问题或验证已通过",
-            "每个固定层级标题前必须带聚合状态点",
-            "每条明细也必须单独标记",
+            "默认完整 Review 和 Code Only 共用以下输出格式",
+            "总览使用纯文字结论和数量",
+            "层级标题只写分类名称和数量",
+            "红 / 黄 / 绿状态点只用于具体明细",
+            "`🟢` 只用于有证据的通过项",
+            "没有内容的层级直接省略",
             "只有目标前端配置了 `patch-node-frontend-environment`",
             "小程序 / 微信开发者工具类前端不强制 runtime prepare",
             "runtime prepare 成功后，必须重新执行原始验证命令",
             "不能把 `@rolldown` / `@typescript` native 缺包写成最终发布验证阻断",
             "未发现阻塞问题不等于没有优化空间",
             "只列有明确维护成本、容易误用、低成本可修的优化点",
-            "没有内容的层级可以用一行 `🟢 未发现` 收起",
+        ]:
+            self.assertIn(expected, review_text)
+
+        for removed_rule in [
+            "每个固定层级标题前必须带聚合状态点",
+            "没有内容的层级用 `🟢 未发现` 收起",
+        ]:
+            self.assertNotIn(removed_rule, review_text)
+
+    def test_review_docs_define_document_isolated_code_only_mode(self) -> None:
+        skill_root = Path(__file__).resolve().parents[1]
+        skill_text = (skill_root / "SKILL.md").read_text(encoding="utf-8")
+        review_text = (skill_root / "references" / "review.md").read_text(encoding="utf-8")
+
+        for text in [skill_text, review_text]:
+            self.assertIn("review --code-only", text)
+            self.assertIn("默认完整 Review", text)
+
+        for expected in [
+            "不读取 `index.md`、`plan.md`、`progress.md`、`decision-log.md`",
+            "不复用历史会话中的需求判断和审查结论",
+            "`meta.yaml` 只用于定位目标仓库和记录分支",
+            "不代表需求完整性或上线验收",
         ]:
             self.assertIn(expected, review_text)
 
