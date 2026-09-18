@@ -1,6 +1,6 @@
 ---
 name: task-workflow
-description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的多仓任务创建、恢复、代码审查、重复验证、PR、发布、同步或阶段切换时使用。"
+description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的多仓任务创建、恢复、代码审查、提交推送、PR、发布、同步或阶段切换时使用。"
 ---
 
 # 任务工作流
@@ -53,9 +53,9 @@ description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的�
 - Review / codeview 细则见 [review.md](references/review.md)
 - 文档模型与模板规则见 [docs-model.md](references/docs-model.md)
 - 阶段化、`next`、产品子任务拆分规则见 [stages.md](references/stages.md)
-- 发布、同步和目标识别规则见 [publish-sync.md](references/publish-sync.md)
+- 发布、同步、推送和目标识别规则见 [publish-sync.md](references/publish-sync.md)
 - runtime、后端测试环境和配置字段见 [runtime.md](references/runtime.md)
-- 开发、Review、提交、推送、PR 和发布之间的验证去重与历史证据见 [verification.md](references/verification.md)
+- 开发、Review、保存推送、PR 和发布之间的验证边界、去重与历史证据见 [verification.md](references/verification.md)
 
 ### 1. Init
 
@@ -247,7 +247,20 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_ru
 - 若已有开放 PR，默认输出其状态和链接；如果本次明确是在继续准备上线或重新操作 PR，允许只更新标题中的操作日期 / 上线日期，但不得自动关闭、合并或重试已有 PR
 - 更新已有 PR 标题前必须先用 `sg pr view` 回读完整标题；更新日期时只替换标题开头第一个 `#YYYYMMDD#`，不得替换后续 `#BBS#`；编辑后再次 `sg pr view` 确认完整标题，保留 `WIP:`、BBS 编号、任务名和“有前端/有后端”后缀
 
-### 8. Clean Develop
+### 8. Save / Push
+
+用于只把当前任务仓库代码保存到远程任务分支，不做代码正确性证明。
+
+执行前必须读取 [verification.md](references/verification.md) 和 [publish-sync.md](references/publish-sync.md)。
+
+关键边界：
+- `Save / Push` 只是保存代码，不等同于 Review、PR、发布、上线准备或任务完成
+- 用户表达“提交到远程 / 推送一下 / 保存代码 / 代码先提交”时，优先按 save-only 判断，除非同时明确要求 Review、PR、发布或验证
+- 目标识别、暂存范围、commit / push 和输出要求见 [publish-sync.md](references/publish-sync.md)
+- 验证边界、hook 失败和前端依赖环境边界见 [verification.md](references/verification.md)
+- 不因为 save-only 更新任务状态为 `测试中` / `已完成`，除非用户明确要求
+
+### 9. Clean Develop
 
 用于发布前清理当前任务仓库里的本地 `develop` 分支，避免后续 `sg publish` 合入远程 `develop` 前误用落后的本地分支。
 
@@ -274,7 +287,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/clean_develop_t
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/clean_develop_task_workspace.py "YYYY-MM-DD-原始任务名" 后端 手机前端
 ```
 
-### 9. MySQL
+### 10. MySQL
 
 用于在产地后端和批发后端本地开发之间，显式切换共享 MySQL 容器的数据目录。
 
@@ -299,7 +312,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_mys
 - 当前数据目录不匹配时，只重建 MySQL 容器，输出切换前后目录
 - 切换会让正在连接 MySQL 的任务 app 短暂断开，必要时重启对应后端 app
 
-### 10. Review
+### 11. Review
 
 用于任务开发完成或准备上线前，对当前任务改动做代码审查、项目规则审查、对抗式审查，并收敛测试代码。
 
@@ -360,7 +373,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_mys
 
 配置为 `patch-node-frontend-environment` 的前端，只有需要新跑 Vitest / `npm run typecheck` / `npm run build:*` 时，才按 [runtime.md](references/runtime.md) 使用项目 Node、确认 `process.arch` 并直接运行最快目标验证；仅 `node_modules` 不存在或命令出现 native binding 缺失时执行 runtime prepare。`sg publish local` 前只做原生 optional 依赖准备，不做完整 runtime prepare。小程序 / 微信开发者工具类前端按项目现有编译、预览或上传流程验证，不因为未执行 runtime prepare 就阻断 review。`@rolldown/binding-darwin-*`、`@typescript/typescript-darwin-*` 缺失默认按本地设备 / Node 架构问题处理，不当成业务代码失败。
 
-### 11. Complete
+### 12. Complete
 
 用于编码和自测完成后标记任务完成。
 
@@ -380,7 +393,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_mys
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/complete_task_workspace.py "YYYY-MM-DD-原始任务名"
 ```
 
-### 12. Next
+### 13. Next
 
 用于在同一个任务工作空间内开启下一阶段任务，例如一期上线后继续做二期。
 
@@ -413,7 +426,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_works
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_workspace.py "YYYY-MM-DD-原始任务名" "新任务名" --repo 手机前端
 ```
 
-### 13. Stage
+### 14. Stage
 
 用于在多阶段任务中切回或切换到某个已记录阶段，例如进入二期后临时回到一期分支处理问题。
 
@@ -442,13 +455,15 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_sta
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_stage.py "YYYY-MM-DD-原始任务名" "一期任务名"
 ```
 
-### 14. Cleanup
+### 15. Cleanup
 
 用于任务已完成，并且需要清理任务代码目录的时候。
 
 规则：
 - 任务状态必须是 `已完成`
-- 每个记录仓库都必须工作区干净，并且已推送到远程
+- 每个记录仓库都必须工作区干净，且当前分支与 `meta.yaml` 记录分支一致
+- `cleanup` 不校验 upstream，也不关心远程任务分支是否仍存在；上线后远程任务分支被删除属于正常场景
+- 如果仓库仍有可比较的 upstream，且本地存在未推送提交，阻断 cleanup，避免删除唯一代码副本
 - 删除任务代码前，先清理每个绑定仓库的当前任务 runtime，避免遗留旧端口或已无法使用的任务 `app` 容器
 - 对于 `shared-backend-app`，`cleanup` 只删除当前任务专属的后端 `app` 容器
 - `cleanup` 不得删除共享 Docker 服务、Docker volume、MySQL 数据目录、镜像、任务文档、远程分支或源仓库
@@ -463,7 +478,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_sta
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/cleanup_task_workspace.py "YYYY-MM-DD-原始任务名"
 ```
 
-### 15. Status
+### 16. Status
 
 用于用户想快速查看任务状态和任务仓库路径。
 
@@ -479,7 +494,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/cleanup_task_wo
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/status_task_workspace.py
 ```
 
-### 16. Portal
+### 17. Portal
 
 用于在浏览器里快速查看当前开发中任务对应的手机端、PC 端和后端端口，不再手工记忆任务与端口的映射关系。
 
@@ -517,6 +532,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/serve_task_dev_
 - 当用户表达分阶段、一二期、开启下一阶段或拆产品子任务时，读取 [stages.md](references/stages.md)
 - 当用户表达切回上一阶段、切到某一期、回到历史阶段处理问题时，使用 `switch_task_stage.py`，不要只手动 `git checkout`
 - 当需要发布或同步远程主线时，读取 [publish-sync.md](references/publish-sync.md)
+- 当需要只提交或推送任务代码到远程保存时，按 `Save / Push` 处理，不要套用 Review、PR 或发布验证链路
 - 当需要创建合并请求时，读取 [publish-sync.md](references/publish-sync.md)，先确认当前 `sg pr` 支持所需能力，再使用 `sg pr`，不改用其他 PR 客户端
 - 当需要清理任务仓库的本地 `develop` 分支时，使用 `clean_develop_task_workspace.py`，不要操作远程 `origin/develop`
 - 当需要准备 runtime、解释 `repositories.yaml` / `workspace.yaml` 字段、处理后端测试环境时，读取 [runtime.md](references/runtime.md)
@@ -539,6 +555,13 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/serve_task_dev_
 - 当前识别到的任务、目标仓库、`meta.yaml` 记录的源分支和远程默认目标分支
 - 已有 PR 检查、工作区和分支核验结果
 - 是否执行了源分支首次推送，以及 `sg pr create` 的结果、PR 编号和链接
+
+当用户要求保存、提交或推送代码到远程时，回复应聚焦于：
+- 当前识别到的任务和目标仓库
+- 每个仓库的提交 hash、远程分支和 push 结果
+- 推送后的工作区与 upstream 状态
+- 明确说明“本次仅保存代码到远程，未重新运行测试、类型检查或发布”
+- 如果只复用了历史验证记录，说明它只是历史记录，不表述为本轮新执行
 
 当用户要求删除本地 `develop` 分支时，回复应聚焦于：
 - 当前识别到的任务和目标仓库

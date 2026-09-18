@@ -7,7 +7,7 @@ repo_dir_pattern: "repo-key__raw-task-name"
 default_branch_mode: "raw-task-name"
 branch_name_sanitization: "minimal-git-safe"
 clone_source_mode: "remote"
-cleanup_requires_remote_sync: true
+complete_requires_remote_sync: true
 
 documents:
   index: "index.md"

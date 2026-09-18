@@ -32,7 +32,9 @@ def main() -> int:
     docs_root = Path(workspace_cfg["docs_root"])
     tasks_root = Path(workspace_cfg["tasks_root"])
     documents = workspace_cfg.get("documents", {})
-    require_remote_sync = bool(workspace_cfg.get("cleanup_requires_remote_sync", True))
+    require_remote_sync = bool(
+        workspace_cfg.get("complete_requires_remote_sync", workspace_cfg.get("cleanup_requires_remote_sync", True))
+    )
     repo_cfg_by_key = {
         str(repo["key"]): repo
         for repo in repositories_cfg.get("repositories", [])

@@ -3866,6 +3866,126 @@ class NextTaskWorkspaceTests(unittest.TestCase):
             self.assertIn("- 当前阶段：第 6 阶段", (task_docs_root / "index.md").read_text(encoding="utf-8"))
 
 
+class CleanupValidationTests(unittest.TestCase):
+    def _git(self, repo_path: Path, *args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repo_path), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.rstrip()
+
+    def _commit_file(self, repo_path: Path, relative_path: str, content: str, message: str) -> str:
+        file_path = repo_path / relative_path
+        file_path.write_text(content, encoding="utf-8")
+        self._git(repo_path, "add", relative_path)
+        self._git(repo_path, "commit", "-m", message)
+        return self._git(repo_path, "rev-parse", "HEAD")
+
+    def _init_repo(self, repo_path: Path) -> None:
+        self._git(repo_path, "init", "--initial-branch=master")
+        self._git(repo_path, "config", "user.email", "test@example.com")
+        self._git(repo_path, "config", "user.name", "Test User")
+        self._commit_file(repo_path, "base.txt", "base\n", "base")
+
+    def test_cleanup_allows_completed_task_branch_without_upstream(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir) / "repo"
+            repo_path.mkdir()
+            self._init_repo(repo_path)
+            self._git(repo_path, "checkout", "-b", "已上线任务")
+
+            issues = lib.validate_repo_state_for_cleanup(repo_path, "已上线任务")
+
+            self.assertEqual(issues, [])
+
+    def test_cleanup_blocks_when_existing_upstream_has_unpushed_local_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir) / "repo"
+            origin_path = Path(tmpdir) / "origin.git"
+            subprocess.run(
+                ["git", "init", "--bare", "--initial-branch=master", str(origin_path)],
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+            repo_path.mkdir()
+            self._init_repo(repo_path)
+            self._git(repo_path, "remote", "add", "origin", str(origin_path))
+            self._git(repo_path, "push", "-u", "origin", "master")
+            self._git(repo_path, "checkout", "-b", "已上线任务")
+            self._git(repo_path, "push", "-u", "origin", "已上线任务")
+            self._commit_file(repo_path, "local.txt", "local\n", "local only")
+
+            issues = lib.validate_repo_state_for_cleanup(repo_path, "已上线任务")
+
+            self.assertEqual(issues, ["has 1 local commit(s) not pushed to origin/已上线任务"])
+
+    def test_cleanup_script_allows_completed_task_repo_without_upstream(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_root = Path(tmpdir) / "workspace"
+            docs_root = workspace_root / "_docs"
+            tasks_root = workspace_root / "_tasks"
+            config_root = workspace_root / "config"
+            task_id = "2026-06-03-已上线任务"
+            task_docs_root = docs_root / task_id
+            task_code_root = tasks_root / task_id
+            repo_path = task_code_root / "producer-backend__已上线任务"
+            task_docs_root.mkdir(parents=True)
+            repo_path.mkdir(parents=True)
+            config_root.mkdir(parents=True)
+
+            (config_root / "workspace.yaml").write_text(
+                "\n".join(
+                    [
+                        f'workspace_root: "{workspace_root}"',
+                        f'tasks_root: "{tasks_root}"',
+                        f'docs_root: "{docs_root}"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (config_root / "repositories.yaml").write_text(
+                "\n".join(
+                    [
+                        "repositories:",
+                        "- key: producer-backend",
+                        '  path: "/tmp/producer-backend"',
+                        '  remote: "git@example.com:producer-backend.git"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (task_docs_root / "meta.yaml").write_text(
+                "\n".join(
+                    [
+                        f"task_id: {task_id}",
+                        "status: 已完成",
+                        "resume_status: 已完成",
+                        "coding_allowed: false",
+                        "repos:",
+                        "- key: producer-backend",
+                        "  repo_dir: producer-backend__已上线任务",
+                        "  branch: 已上线任务",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            self._init_repo(repo_path)
+            self._git(repo_path, "checkout", "-b", "已上线任务")
+
+            with mock.patch("sys.argv", [
+                "cleanup_task_workspace.py",
+                task_id,
+                "--config-root",
+                str(config_root),
+                "--dry-run",
+            ]):
+                self.assertEqual(cleanup_script.main(), 0)
+
+
 class CompleteCleanupRuntimeTests(unittest.TestCase):
     def test_complete_task_workspace_stops_runtime_before_marking_complete(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -4013,7 +4133,7 @@ class CompleteCleanupRuntimeTests(unittest.TestCase):
             (task_code_root / "producer-backend__部门转货").mkdir()
 
             with (
-                mock.patch.object(cleanup_script, "validate_repo_state", return_value=[]),
+                mock.patch.object(cleanup_script, "validate_repo_state_for_cleanup", return_value=[]),
                 mock.patch.object(cleanup_script, "cleanup_task_runtime", create=True) as cleanup_runtime_mock,
                 mock.patch("sys.argv", [
                     "cleanup_task_workspace.py",

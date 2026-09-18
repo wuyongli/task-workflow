@@ -112,7 +112,7 @@ MySQL 数据目录切换：
 - repo directory naming rule
 - branch sanitization rule
 - clone source mode
-- cleanup safety policy
+- complete remote-sync safety policy
 - default document filenames
 
 模板：[workspace.yaml.example](workspace.yaml.example)

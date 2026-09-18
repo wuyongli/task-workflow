@@ -1926,6 +1926,44 @@ def validate_repo_state(repo_path: Path, require_remote_sync: bool, expected_bra
     return issues
 
 
+def validate_repo_state_for_cleanup(repo_path: Path, expected_branch: str | None = None) -> list[str]:
+    issues: list[str] = []
+    if not repo_path.exists():
+        issues.append("repo path is missing")
+        return issues
+    git_dir = repo_path / ".git"
+    if not git_dir.exists():
+        issues.append("repo path is not a git repository")
+        return issues
+
+    status = run_git(repo_path, "status", "--short")
+    if status:
+        issues.append("has uncommitted changes")
+
+    branch = run_git(repo_path, "branch", "--show-current")
+    if not branch:
+        issues.append("is not on a local branch")
+        return issues
+
+    if expected_branch and branch != expected_branch:
+        issues.append(f"current branch is {branch}, expected {expected_branch}")
+
+    try:
+        upstream = run_git(repo_path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+        counts = run_git(repo_path, "rev-list", "--left-right", "--count", f"{upstream}...HEAD")
+    except subprocess.CalledProcessError:
+        # Published task branches are often removed from origin. Cleanup only deletes
+        # the local task checkout, so a missing upstream must not block it.
+        return issues
+
+    _behind_str, ahead_str = counts.split()
+    ahead = int(ahead_str)
+    if ahead > 0:
+        issues.append(f"has {ahead} local commit(s) not pushed to {upstream}")
+
+    return issues
+
+
 def read_current_branch(repo_path: Path) -> str:
     if not repo_path.exists():
         return "missing"

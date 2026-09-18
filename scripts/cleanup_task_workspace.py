@@ -12,7 +12,7 @@ from task_workflow_lib import (
     require_task_status,
     resolve_repo_path,
     safe_remove_path,
-    validate_repo_state,
+    validate_repo_state_for_cleanup,
 )
 
 
@@ -20,7 +20,7 @@ DEFAULT_CONFIG_ROOT = Path("/Users/wuyongli/Documents/sg-project/_workspace/conf
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Remove one completed task code directory after publish-safe checks.")
+    parser = argparse.ArgumentParser(description="Remove one completed task code directory after local cleanup-safe checks.")
     parser.add_argument("task_id", help="Full task id, e.g. YYYY-MM-DD-原始任务名")
     parser.add_argument("--config-root", type=Path, default=DEFAULT_CONFIG_ROOT)
     parser.add_argument("--dry-run", action="store_true")
@@ -30,7 +30,6 @@ def main() -> int:
     repositories_cfg = load_yaml(args.config_root / "repositories.yaml")
     docs_root = Path(workspace_cfg["docs_root"])
     tasks_root = Path(workspace_cfg["tasks_root"])
-    require_remote_sync = bool(workspace_cfg.get("cleanup_requires_remote_sync", True))
     repo_cfg_by_key = {
         str(repo["key"]): repo
         for repo in repositories_cfg.get("repositories", [])
@@ -50,7 +49,7 @@ def main() -> int:
         repo_key = str(repo_meta.get("key") or "unknown")
         repo_path = resolve_repo_path(tasks_root, args.task_id, repo_meta)
         expected_branch = str(repo_meta.get("branch") or "")
-        issues = validate_repo_state(repo_path, require_remote_sync, expected_branch or None)
+        issues = validate_repo_state_for_cleanup(repo_path, expected_branch or None)
         if issues:
             failed = True
             print(f"[FAIL] {repo_key} -> {repo_path}")

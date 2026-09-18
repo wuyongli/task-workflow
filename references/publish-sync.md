@@ -1,8 +1,8 @@
-# 发布与同步
+# 发布、同步与推送
 
 ## 目标识别
 
-`publish` / `sync` / `clean-develop` / `pr` 共用目标识别规则：
+`publish` / `sync` / `clean-develop` / `pr` / `save-push` 共用目标识别规则：
 - 默认从当前任务上下文识别当前要操作的任务，不额外要求用户重复提供 task 标识
 - 如果当前上下文无法唯一识别任务，才向用户补充确认
 - 目标表达的核心是“目标分类”，不是固定仓库名；执行时需要在当前任务绑定仓库里动态匹配对应的后端、手机前端、PC 前端仓库
@@ -12,6 +12,7 @@
 ## 验证去重
 
 - PR 和发布前按 [verification.md](verification.md) 执行当前消息所需验证；如果同一轮响应内已经完成最终验证且相关 tree 未变化，不得仅因提交、推送或创建 PR 重跑
+- 用户只要求保存、提交或推送代码到远程时，按 save-only 处理；不因为保存代码主动运行 test、typecheck、lint、build、完整 runtime prepare 或前端依赖修复
 - 跨消息记录只用于说明对应 SHA 的历史结果和选择本轮验证范围，不能替代当前消息要求的新鲜验证
 - 发布后的真实页面、接口或测试服数据属于环境验收，按需重新验证，不能只用本地测试代替
 - 如果用户或项目上线闸门明确要求重新执行，以明确要求为准
@@ -60,6 +61,30 @@
 ```bash
 sg pr create --target master --title "采购优化（有前端）" --reviewer alice --wip
 ```
+
+## Save / Push
+
+用于只把当前任务仓库代码保存到远程任务分支。
+
+自然语言触发：
+- `提交到远程`
+- `推送一下`
+- `保存代码`
+- `先把代码推上去`
+- `代码先提交`
+
+规则：
+- 默认不指定目标时，处理当前任务下有本次改动的绑定仓库；指定目标时，继续使用和 publish / sync 一样的自然语言目标识别方式
+- 执行前先加载当前任务的 `meta.yaml`，确认目标仓库存在，当前分支与记录分支一致
+- 先检查 `git status --short` 和本次相关 diff，暂存前排除无关 dirty 文件、其它任务文档和其它仓库改动
+- 按仓库独立 commit / push；无改动仓库不创建空提交
+- 首次推送任务分支时允许 `git push -u origin <当前分支>`；已有 upstream 时普通 `git push`
+- 推送后用 `git status --short --branch`、upstream ahead / behind 或远程 SHA 确认保存成功
+- 不运行测试、类型检查、lint、构建、真实页面验收或发布命令
+- 不运行 `prepare_task_runtime.py`，不安装依赖，不修复 `node_modules`，不处理前端 native binding 缺失
+- commit hook 失败时展示 hook 输出并停止该仓库；hook 修改文件时展示新增改动，不自动继续提交
+- 默认不使用 `--no-verify`，除非用户明确授权跳过 hook
+- save-only 不更新任务状态；如果需要记录进展，只能在 `progress.md` 中简短记录“已推送保存”，不要写成已验证或已完成
 
 ## Publish
 
@@ -179,3 +204,9 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/clean_develop_t
 - 当前识别到的任务、当前阶段和可选 `bbs_id`
 - 每个目标仓库的源分支、目标分支、默认或用户指定标题，以及标题日期采用的本次操作日 / 用户指定上线日
 - 已有 PR 检查、首次推送、创建结果、PR 编号和链接
+
+保存 / 推送时聚焦：
+- 当前识别到的任务和目标仓库
+- 每个仓库的提交 hash、远程分支、push 结果和最终 `git status --short --branch`
+- 明确说明“本次仅保存代码到远程，未重新运行测试、类型检查或发布”
+- hook 失败、无改动、分支不一致或存在无关 dirty 文件时，直接展示事实，不自动进入验证、修依赖或发布流程

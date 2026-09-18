@@ -1,7 +1,7 @@
 interface:
-  display_name: "Task Workflow"
-  short_description: "Manage multi-repo task workspaces and verification scope"
-  default_prompt: "Use $task-workflow to create or run a multi-repo task: continue, review/verify, prepare runtime, PR/publish/sync, switch stages, inspect portal, complete, or clean up."
+  display_name: "任务工作流"
+  short_description: "管理多仓任务工作区，以及代码审查、验证、发布和阶段切换"
+  default_prompt: "使用 $task-workflow 处理当前多仓任务，并根据任务状态选择创建、继续、审查、验证、发布、同步或阶段切换。"
 
 policy:
   allow_implicit_invocation: true
