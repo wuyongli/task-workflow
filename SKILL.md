@@ -1,6 +1,6 @@
 ---
 name: task-workflow
-description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的多仓任务创建、恢复、自动开发模式、代码审查、提交推送、PR、发布、同步或阶段切换时使用。"
+description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的多仓任务创建、恢复、自动开发模式、代码审查、提交推送、PR、发布、同步、阶段切换或生成公示文档时使用。"
 ---
 
 # 任务工作流
@@ -71,6 +71,7 @@ description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的�
 - 发布、同步、推送和目标识别规则见 [publish-sync.md](references/publish-sync.md)
 - runtime、后端测试环境和配置字段见 [runtime.md](references/runtime.md)
 - 开发、Review、保存推送、PR 和发布之间的验证边界、去重与历史证据见 [verification.md](references/verification.md)
+- 公示文档生成与钉钉投递规则见 [doc.md](references/doc.md)
 
 ### 1. Init
 
@@ -540,6 +541,26 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/serve_task_dev_
 - PC 端地址默认展示为 `http://pfzone.senguo.me:<port>/producer/`
 - 如果你只想手动刷新页面拿到最新状态，用本地页即可；浏览器每次刷新都会重新读取最新任务、分支和端口
 - 如果只需要一个可分享或临时保存的快照页，再使用静态导出脚本
+
+### 18. Doc
+
+用于把当前任务的方案 / 成果整理成正式公示文档，并投递到固定钉钉文件夹给同事查看。
+
+显式命令：
+
+```text
+/task-workflow doc
+/task-workflow doc <任务名>
+```
+
+执行前必须读取 [doc.md](references/doc.md)。
+
+关键边界：
+- 时机由用户主动调用（方案确定后或开发完成后），不随任务自动生成
+- 标题 = 「当前阶段任务名 + 生成当天日期」，如「采购单新增撤销功能2026.10.12」；用户给的名字就是任务名，日期由 AI 自动补
+- 只读任务文档整理成文，不改任务状态 / 代码 / `plan.md` / `progress.md` / `meta.yaml`
+- 不接截图管线，只预留截图占位区域，用户事后自己补图
+- 生成失败不阻塞任务，最终以 `dws doc read` 回读为准，不把「开始生成」说成「已生成」
 
 ## 文档模型与运行配置
 
