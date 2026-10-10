@@ -1,6 +1,6 @@
 ---
 name: task-workflow
-description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的多仓任务创建、恢复、代码审查、提交推送、PR、发布、同步或阶段切换时使用。"
+description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的多仓任务创建、恢复、自动开发模式、代码审查、提交推送、PR、发布、同步或阶段切换时使用。"
 ---
 
 # 任务工作流
@@ -49,10 +49,25 @@ description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的�
 
 ## 工作流
 
+### 执行模式
+
+任务空间用顶层 `meta.yaml.execution_mode` 区分 `manual` / `auto`，缺省为 `manual`。用户要求“开启自动开发模式”“继续自动开发”，或恢复的任务空间为 `auto` 且本轮要求继续任务时，读取 [auto-mode.md](references/auto-mode.md)。
+
+- `/task-workflow mode auto`：启用当前任务空间自动模式，在已明确范围内连续分析、确定方案、开发、自测、审查修复并推送任务分支。
+- `/task-workflow mode manual`：切回常规协作，不撤销已经成立的开发授权。
+- 模式按任务空间保存，不按阶段、仓库、分支、会话或整个工作流全局生效；`next` 和 `stage` 均保持任务空间模式，新阶段仍需按自己的 plan 核对范围与开发准入。
+- 只新增 `execution_mode`；执行范围和特殊限制写当前 plan，进度和阻塞复用 `progress.md`。本轮“只分析 / 只审查 / 只保存”等明确限制优先，单独 `load` 不触发开发。
+- 自动模式是协作规则，不会创建定时器、会话或后台调度。
+- 自动闭环包含适用的真实页面、接口和数据库结果测试，优先使用 Codex 内置浏览器；仅单测通过或代码已推送不代表闭环完成。执行与阻塞规则见 [verification.md](references/verification.md)。
+- 查看当前任务 Docker 日志是通用排障取证能力，不受执行模式限制；容器定位和日志读取方式见 [verification.md](references/verification.md)。
+- 自动开发里程碑按 [auto-mode.md](references/auto-mode.md) 推送到钉钉群“国庆任务进度推送”；消息必须写任务名称和阶段，BBS 编号只作辅助，不能只发 ID。
+- 多任务假期安排按 [dispatch.md](references/dispatch.md) 执行。`scripts/task_dispatch.py` 提供持久化串行派发、人工追加、交接和通知记录；Codex 总调度负责会话工具与外部动作，定时唤醒须另行配置，初始化队列默认关闭。
+
 细节按需读取：
 - Review / codeview 细则见 [review.md](references/review.md)
 - 文档模型与模板规则见 [docs-model.md](references/docs-model.md)
 - 阶段化、`next`、产品子任务拆分规则见 [stages.md](references/stages.md)
+- 多任务自动开发总调度约束见 [dispatch.md](references/dispatch.md)
 - 发布、同步、推送和目标识别规则见 [publish-sync.md](references/publish-sync.md)
 - runtime、后端测试环境和配置字段见 [runtime.md](references/runtime.md)
 - 开发、Review、保存推送、PR 和发布之间的验证边界、去重与历史证据见 [verification.md](references/verification.md)
@@ -336,6 +351,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_mys
 - 先按 [verification.md](references/verification.md) 判断本轮验证是否已经覆盖当前主张，并用跨消息历史记录收敛本轮验证范围；只有确实需要新跑前端验证时，才按 [runtime.md](references/runtime.md) 使用项目 Node 直接运行最快目标命令，并在 `node_modules` 不存在或出现 native binding 缺失时自动 prepare
 - 默认完整 Review 在同一次审查中完成三个维度：通用 code review、对抗式审查、测试代码收敛审查；不为切换维度重复读取 diff 或重复运行测试。Code Only 只做由当前代码和技术上下文支持的审查，不固定执行任务级测试收敛或上线判断
 - 默认只输出结论，不改代码；用户明确授权“明确问题直接修”“测试代码可以收敛/删除”时才修改
+- 上述为独立 review 的默认；已授权自动开发闭环中的明确缺陷修复按 [auto-mode.md](references/auto-mode.md) 执行，本轮只读限制仍优先
 - 详细流程和判断标准见 [review.md](references/review.md)
 
 ### 开发准入闸门
@@ -349,20 +365,20 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_mys
 - 更新 `index.md`、`plan.md`、`progress.md`、`meta.yaml`
 - 给出实现建议、改动清单、验证建议、风险提示
 
-当任务处于 `方案中` 时，AI 不可以做：
+当任务处于 `方案中` 且尚未满足下述开发准入时，AI 不可以做：
 - 直接修改业务代码、配置、SQL、脚本
 - 安装依赖、执行迁移、启动正式实现
 - 把“先看下/先分析/先给方案/先评估”理解为允许开始开发
 
 只有同时满足以下条件，才允许从 `方案中` 进入 `开发中`：
-1. `plan.md` 中的产品方案已经确认
+1. 当前 plan 中的产品方案已经由用户确认，或由 AI 在用户明确启用的自动模式及其授权范围内确定；两种依据必须如实区分
 2. `plan.md` 中已经补齐明确的开发方案，达到可执行状态，关键待确认项已经收敛到不影响开工
-3. 用户明确表达允许开始代码工作，例如“可以开始开发”“开始改代码”“按这个方案做”
+3. 用户明确表达允许开始代码工作，例如“可以开始开发”“开始改代码”“按这个方案做”，或已经启用包含开发的自动模式，且本轮没有更窄的限制
 
-如果用户没有明确授权开始代码工作，即使 AI 已经完成方案分析，也必须停留在 `方案中`。
+如果用户没有明确授权开始代码工作，即使 AI 已经完成方案分析，也必须停留在 `方案中`。有效的既有自动模式授权不必重复索取；满足准入后先同步 `status`、`current_stage.status` 和 `coding_allowed: true` 再编码，不能仅凭 `auto` 自动把编码许可置为真。
 
 如果恢复的是一个已存在任务：
-- 当状态是 `方案中`，默认继续分析、补方案、补文档，不直接开工编码
+- 当状态是 `方案中`，默认继续分析、补方案、补文档；自动模式在满足上述准入后可连续进入开发
 - 当状态是 `开发中` 或 `测试中`，可以继续既有实现与验证工作，除非用户明确要求回到方案讨论
 
 ### 后端测试环境
@@ -415,7 +431,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/complete_task_w
 - `--bbs-id` 是选填；新阶段可以指定新的 `bbs_id`，如果不指定，不默认沿用上一阶段的 `bbs_id`
 - 阶段化和子任务拆分按用户产品口径判断，不按前端/后端/PC/手机端技术面机械拆分
 - 没有子任务时，当前阶段 plan 是当前阶段唯一方案来源；有子任务时，子文档才承接详细方案
-- 开启新阶段后，当前阶段状态为 `方案中`、`coding_allowed: false`，等待本阶段方案确认和明确开发指令
+- 开启新阶段后，当前阶段状态为 `方案中`、`coding_allowed: false`；补齐本阶段方案并核对开发授权，任务空间为 auto 且已有授权覆盖时可按准入规则继续，不重复索取开工确认
 
 推荐命令：
 

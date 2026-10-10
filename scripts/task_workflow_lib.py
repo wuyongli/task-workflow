@@ -145,6 +145,13 @@ def _current_stage(task_meta: dict[str, Any]) -> dict[str, Any]:
     return current_stage if isinstance(current_stage, dict) else {}
 
 
+def task_execution_mode(meta: dict[str, Any]) -> str:
+    mode = meta.get("execution_mode", "manual")
+    if mode not in ("manual", "auto"):
+        raise ValueError(f"invalid execution_mode: {mode!r}; expected manual or auto")
+    return mode
+
+
 def current_task_title_name(task_meta: dict[str, Any]) -> str:
     current_stage = _current_stage(task_meta)
     for value in (

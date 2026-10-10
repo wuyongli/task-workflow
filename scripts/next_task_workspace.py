@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from task_workflow_lib import (
+    task_execution_mode,
     load_task_meta,
     load_yaml,
     require_task_status,
@@ -128,10 +129,11 @@ def render_next_phase_plan(
 - 对范围/开发/上线的影响：待补充
 
 ## 开发准入确认
-- 方案是否已确认：未确认
+- 方案采用依据：未确定（可选：用户确认 / AI 依据用户预授权确定）
 - 开发方案是否已补齐：未补齐
 - 是否允许开始代码工作：未允许
 - 用户明确指令：待补充
+- 自动执行范围与特殊限制：仅自动模式适用
 - 开工前仍需满足的条件：待补充
 
 ## 待确认事项
@@ -150,6 +152,7 @@ def render_next_index(
     previous_status_text: str,
     phase: int,
     bbs_id: str | None = None,
+    execution_mode: str = "manual",
 ) -> str:
     bbs_lines = [f"- 需求编号：#{bbs_id}"] if bbs_id else []
     return "\n".join(
@@ -158,10 +161,12 @@ def render_next_index(
             "",
             "## 任务摘要",
             f"- 当前状态：{next_status}",
+            f"- 执行模式：{execution_mode}",
             *bbs_lines,
             f"- 当前主线：已开启“{next_task_name}”阶段，先补充本阶段正式方案。",
             "- 当前阻塞：无",
-            "- 下一步：补充当前阶段 plan，并等待明确开发指令。",
+            ("- 下一步：补充当前阶段 plan，核对授权范围与开发准入后自动推进。"
+             if execution_mode == "auto" else "- 下一步：补充当前阶段 plan，并等待明确开发指令。"),
             "",
             "## 阶段关系",
             f"- 当前阶段：第 {phase} 阶段",
@@ -198,7 +203,7 @@ def update_progress_for_next_phase(
             "## 当前进展",
             f"- 已完成：{previous_progress_text}",
             f"- 进行中：整理“{next_task_name}”的当前阶段方案与范围。",
-            "- 下一步：补充当前阶段 plan，并等待明确开发指令。",
+            "- 下一步：补充当前阶段 plan，按任务空间执行模式核对开发授权与准入。",
         ]
     )
     actual_changes = "\n".join(
@@ -264,6 +269,7 @@ def main() -> int:
     }
 
     meta_path, meta = load_task_meta(docs_root, args.task_id)
+    execution_mode = task_execution_mode(meta)
     meta_status = require_task_status(meta, NEXT_ALLOWED_STATUSES, "next")
     previous_status, previous_resume_status = _current_stage_status(meta, meta_status)
     previous_archive_status, previous_archive_resume_status = _archive_status_for_next(
@@ -433,6 +439,7 @@ def main() -> int:
             previous_status_text=_phase_status_text(previous_archive_status, previous_archive_resume_status),
             phase=next_phase,
             bbs_id=next_bbs_id or None,
+            execution_mode=execution_mode,
         ),
         args.dry_run,
     )

@@ -13,7 +13,11 @@
 - 任务 app 容器由当前任务仓库的 `docker/.task.env` 和 `docker/docker-compose.task.yml` 定义，测试时应在任务后端仓库根目录执行
 - 同一任务绑定多个后端时，每个后端使用“任务 ID + repo key”生成独立 `COMPOSE_PROJECT_NAME`；容器、volume 挂载和停止命令互不复用
 - 多个后端应在 `repositories.yaml` 中配置不重叠的 `app_port_start` / `app_port_end`，基础 MySQL、Redis、RabbitMQ、Mongo 和 Docker 网络仍可共享
-- 如果 app 容器未启动，先用当前任务 compose 文件启动 app
+- 进入真实页面流程联调前，先读取仓库 README、AGENTS、package.json、`.codex/environments/environment.toml` 启动动作及 `repositories.yaml` 中的 `auto_start_steps` / `start_commands`，在各动作指定的工作目录按既有指令启动前端服务和后端 Docker 服务，不能只启动 app。纯接口/数据库验证启动实际依赖；独立单测不因此强制启动前端或全套服务
+- 后端 Docker 启动范围以仓库既有配置为准，通常包括共享 MySQL、Redis、RabbitMQ、Mongo、Nginx 和当前任务专属 app。先核对共享容器归属、挂载和网络；健康且匹配的可直接复用，归属、挂载或路由不匹配时先诊断，不直接重建或切换共享资源。缺失或已停止的服务确认无冲突后按原动作启动
+- 就绪检查覆盖容器状态、网络、挂载、端口和近期日志；配置 healthcheck 时须通过，没有 healthcheck 时用服务自身的只读探测或依赖连通验证，不能只凭 running 或命令退出码判定就绪。记录实际命令及 cwd、检查结果和未就绪项到运行附件，progress 只保留结果摘要及附件链接
+- 如果某个非关键动作在仓库配置中标记 `allow_failure: true`，仍需记录失败原因并确认它不影响本次被测页面或接口；不能把配置中的容错标记理解成跳过后端服务
+- 只有所有本次流程实际依赖的后端 Docker 服务和前端进程就绪、代理指向当前任务后端后，才能进入浏览器真实测试；服务未就绪时先诊断并记录阻塞
 
 推荐容器测试命令：
 

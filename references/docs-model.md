@@ -101,6 +101,7 @@ _docs/<task-id>/
 
 说明：
 - `plan.md` 负责记录为什么可以或不可以开工
+- 自动模式下在“开发准入确认”记录用户启用指令、范围和特殊限制，方案采用依据区分“用户确认 / AI 依据用户预授权确定”；不新增授权引用、有效期或目标字段
 - 最终机器状态应写入 `meta.yaml`，不要让 `plan.md` 独自承担机器事实
 - 更新 `plan.md` 时，应把新方案归并到现有结构中，删除被替代的旧表述，不要把多轮讨论结果并列堆在同一章节下
 - `当前有效方案` 只写当前成立的产品/业务方案结论
@@ -195,6 +196,7 @@ _docs/<task-id>/
 - `meta.yaml` 尽量最小化，但应完整承载任务机器事实
 - 最低字段应包含：`task_id`、`status`、`resume_status`、`coding_allowed`、以及每个仓库的 `key`、`repo_dir`、`branch`
 - 顶层 `status` / `resume_status` 表示当前阶段状态，用于兼容现有脚本；多阶段任务还应同步维护 `current_stage.status` / `current_stage.resume_status`
+- 可选顶层 `execution_mode` 为 `manual` / `auto`，缺省按 `manual`；只在任务空间维护一份，不写入 `current_stage` 或 `previous_phases`，`next` / `stage` 均保持该值。模式不替代 `coding_allowed`，开工仍按当前 plan 判断；进度、阻塞和特殊交付限制继续使用现有文档
 - 可选 `bbs_id` 表示当前任务或当前阶段的内部需求反馈编号；同一工作空间进入新阶段后，只有用户提供新的编号时才写入新阶段，没有编号时不要写空字段或占位字段
 - 只要任务状态、`resume_status`、仓库路径或记录分支发生变化，必须优先更新 `meta.yaml`，再确保 `index.md` 与之对齐
 - 当一次更新同时涉及 `index.md` 与 `meta.yaml` 时，视 `meta.yaml` 为最终机器事实，不要反过来只根据 `index.md` 推断

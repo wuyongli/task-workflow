@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from task_workflow_lib import (
+    task_execution_mode,
     load_task_meta,
     load_yaml,
     resolve_repo_path,
@@ -148,6 +149,7 @@ def render_stage_index(
     target_stage: dict[str, Any],
     current_plan_name: str,
     previous_phases: list[dict[str, Any]],
+    execution_mode: str = "manual",
 ) -> str:
     bbs_id = str(target_stage.get("bbs_id") or "").strip()
     bbs_lines = [f"- 需求编号：#{bbs_id.lstrip('#')}"] if bbs_id else []
@@ -165,6 +167,7 @@ def render_stage_index(
             "",
             "## 任务摘要",
             f"- 当前状态：{target_stage.get('status', '未知')}",
+            f"- 执行模式：{execution_mode}",
             *bbs_lines,
             f"- 当前主线：已切换到“{target_stage.get('task_name')}”阶段。",
             "- 当前阻塞：无",
@@ -232,6 +235,8 @@ def main() -> int:
     if target_stage is None:
         print(f"stage switch blocked: target stage not found: {args.target_stage}")
         return 2
+
+    execution_mode = task_execution_mode(meta)
 
     if str(target_stage.get("phase")) == str(current_stage.get("phase")):
         print(f"stage already current: {target_stage.get('task_name')}")
@@ -323,7 +328,8 @@ def main() -> int:
 
     meta["status"] = target_status
     meta["resume_status"] = target_resume_status
-    meta["coding_allowed"] = _coding_allowed_for_status(target_status)
+    # Auto mode requires rechecking the target stage plan after switching.
+    meta["coding_allowed"] = _coding_allowed_for_status(target_status) and execution_mode == "manual"
     meta["phase"] = _coerce_phase(target_stage.get("phase"))
     meta["current_task_name"] = target_task_name
     meta["active_plan"] = target_plan
@@ -353,7 +359,7 @@ def main() -> int:
     docs_task_root = docs_root / args.task_id
     write_text(
         docs_task_root / str(documents.get("index", "index.md")),
-        render_stage_index(_task_theme_name(args.task_id), meta["current_stage"], target_plan, next_previous_phases),
+        render_stage_index(_task_theme_name(args.task_id), meta["current_stage"], target_plan, next_previous_phases, execution_mode),
         args.dry_run,
     )
     append_progress_stage_switch(

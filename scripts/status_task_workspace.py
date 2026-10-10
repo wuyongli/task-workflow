@@ -5,7 +5,13 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from task_workflow_lib import load_task_meta, load_yaml, read_current_branch, resolve_repo_path
+from task_workflow_lib import (
+    task_execution_mode,
+    load_task_meta,
+    load_yaml,
+    read_current_branch,
+    resolve_repo_path,
+)
 
 
 DEFAULT_CONFIG_ROOT = Path("/Users/wuyongli/Documents/sg-project/_workspace/config")
@@ -32,6 +38,7 @@ def main() -> int:
         print("- no tasks")
         return 0
 
+    failed = False
     for task_dir in task_dirs:
         meta_path = task_dir / "meta.yaml"
         if not meta_path.exists():
@@ -43,6 +50,12 @@ def main() -> int:
         coding_allowed = bool(meta.get("coding_allowed", False))
         coding_text = "yes" if coding_allowed else "no"
         current_stage = meta.get("current_stage")
+        try:
+            execution_mode = task_execution_mode(meta)
+        except ValueError as exc:
+            failed = True
+            print(f"- {task_dir.name} [ERROR: {exc}]")
+            continue
         if isinstance(current_stage, dict):
             phase = str(current_stage.get("phase") or meta.get("phase") or "")
             current_task_name = str(current_stage.get("task_name") or meta.get("current_task_name") or "")
@@ -59,7 +72,7 @@ def main() -> int:
         if bbs_id:
             stage_parts.append(f"bbs_id={bbs_id}")
         stage_text = ", " + ", ".join(stage_parts) if stage_parts else ""
-        print(f"- {task_dir.name} [status={status}, resume={resume_status}, coding_allowed={coding_text}{stage_text}]")
+        print(f"- {task_dir.name} [status={status}, resume={resume_status}, coding_allowed={coding_text}, execution_mode={execution_mode}{stage_text}]")
         repos = meta.get("repos", [])
         if not isinstance(repos, list):
             continue
@@ -74,7 +87,7 @@ def main() -> int:
                 f"  - {repo_key}: state={repo_state(repo_path)}, recorded_branch={recorded_branch}, actual_branch={actual_branch}, path={repo_path}"
             )
 
-    return 0
+    return 2 if failed else 0
 
 
 if __name__ == "__main__":

@@ -55,7 +55,8 @@
 - 如果本阶段只涉及当前任务绑定仓库中的部分仓库，允许只切这些仓库到新阶段分支；未选中的仓库继续保留原分支
 - `next --repo` 同时支持 repo key 和自然目标名称，例如 `pf-mproducer-supplier`、`手机前端`、`PC前端`、`后端`
 - 新阶段 plan 文件名优先使用新任务名、分支语义或当前任务描述，不使用 `plan-phase-2.md` 这类抽象命名
-- 开启新阶段后，当前阶段状态为 `方案中`、`coding_allowed: false`，等待本阶段方案确认和明确开发指令
+- 开启新阶段后，当前阶段状态为 `方案中`、`coding_allowed: false`；补齐本阶段方案并核对开发授权，任务空间为 auto 且已有授权覆盖时可按准入规则继续，不重复索取开工确认
+- `next` 保持顶层任务空间 `execution_mode`，不把模式写入历史或当前阶段。新阶段仍从 `方案中`、`coding_allowed: false` 开始，按新 plan 核对目标、范围、验收和既有授权，不沿用旧阶段方案作为准入依据
 
 ## 文档同步
 
@@ -87,6 +88,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_works
 - 切换成功后，原当前阶段进入 `previous_phases`，目标阶段成为 `current_stage`
 - 切出未完成阶段时，历史阶段记录为 `暂停中`，并用 `resume_status` 保存切出前状态
 - 切入 `暂停中` 阶段时，恢复到 `resume_status`；如果目标本地分支不存在，直接阻断，不重建分支
+- `stage` 保持顶层任务空间 `execution_mode`，不从目标阶段恢复模式。任务空间为 auto 时，切回后先令 `coding_allowed: false`，由 AI 核对目标阶段 plan、既有授权与本轮指令后恢复准入；manual 保留原有状态恢复行为
 
 推荐命令：
 

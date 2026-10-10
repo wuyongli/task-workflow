@@ -66,6 +66,8 @@ sg pr create --target master --title "采购优化（有前端）" --reviewer al
 
 用于只把当前任务仓库代码保存到远程任务分支。
 
+以下规则针对用户独立要求 save-only。自动开发闭环的验证、hook 修复和有限重试按 [auto-mode.md](auto-mode.md) 处理，成功后仍逐仓核验远程结果；本轮明确只保存时不得顺势继续开发。
+
 自然语言触发：
 - `提交到远程`
 - `推送一下`
