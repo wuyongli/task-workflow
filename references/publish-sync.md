@@ -102,6 +102,8 @@ sg pr create --target master --title "采购优化（有前端）" --reviewer al
 - 一次可以传多个目标
 - 一次多个目标时，先统一识别并校验目标，再并行发布
 - 发布前先校验任务绑定仓库是否存在，以及当前分支是否与 `meta.yaml` 记录分支一致
+- 普通发布正式执行前，必须先按完全相同的目标集合调用现有 `clean-develop` 指令 / `clean_develop_task_workspace.py`；本地 `develop` 已删除或本来不存在（no-op）后，才允许执行 `sg publish`
+- `clean-develop` 出现普通失败时，该目标不得继续发布；多目标的其它目标按独立失败规则处理。若目标已经停在 `develop` 的合并冲突或冲突解决重试现场，不删除当前分支，按下方 `develop` 冲突规则保留现场并继续重试
 - 如果上一次发布已把仓库停在 `develop` 冲突处理或冲突解决后的重试状态，允许从 `develop` 继续发布，不要强制切回任务分支
 - 配置为 `patch-node-frontend-environment` 的前端仓库，执行 `sg publish local` 前只自动执行当前平台原生 optional 依赖准备；这是本地发布环境准备，不是业务代码改动
 - 发布前不要调用完整 runtime prepare；不要在 publish preflight 中生成端口、改写前端代理或重写 `environment.toml`
@@ -114,6 +116,7 @@ sg pr create --target master --title "采购优化（有前端）" --reviewer al
 - 如果失败原因是工作区不干净、分支异常或发布命令本身报错，默认只反馈事实，不自行修复，除非用户明确要求继续处理
 
 固定命令：
+- 发布前置：`python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/clean_develop_task_workspace.py "<task-id>" [目标...]`
 - 后端仓库：`sg publish jenkins`
 - 前端仓库：`sg publish local`
 
@@ -184,6 +187,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/clean_develop_t
 - 当前识别到的任务
 - 将发布哪些目标
 - 每个目标对应的仓库目录和发布命令
+- 发布前 `clean-develop` 的结果：已删除、本来不存在（no-op）、当前处于 develop 冲突重试现场而保留，或清理失败
 - 前端发布前是否执行了原生 optional 依赖准备，以及 prepare 的错误或异常锁文件变更
 - 发布结果，以及失败仓库的错误信息
 - 如果发布停在 `develop` 合并冲突，说明当前分支、冲突文件、已自动解决的内容、最小验证结果、重试发布结果，或需要用户确认的问题
