@@ -5,12 +5,11 @@
 适用于配置为 `shared-backend-app` 的后端任务工作区。
 
 规则：
-- 后端测试优先在当前任务自己的后端仓库根目录运行
-- 如果宿主机 Python 依赖已经可用，可以先用 `python3 -m pytest ...`
-- 如果宿主机依赖不完整、Python 版本不匹配，或测试涉及运行时依赖，切换到当前任务 Docker app 容器
-- 同一任务中已经确认宿主 pytest 会因缺依赖或 Python 版本失败时，后续直接使用当前任务 Docker，不重复执行已知会失败的宿主命令
-- 不要用共享主仓 `producer-backend` 容器验证任务 clone，除非已经确认该容器挂载的就是当前任务代码目录
-- 任务 app 容器由当前任务仓库的 `docker/.task.env` 和 `docker/docker-compose.task.yml` 定义，测试时应在任务后端仓库根目录执行
+- 后端任务测试统一在当前任务专属 Docker app 容器中执行；即使宿主机 Python 依赖可用，也不先尝试宿主机 pytest
+- 任务 app 容器由当前任务仓库的 `docker/.task.env` 和 `docker/docker-compose.task.yml` 定义；测试前核对 Compose 项目和代码挂载属于当前任务，不使用共享主仓或其它任务容器验证任务 clone
+- 测试命令从任务后端仓库根目录发起，容器内也切到仓库根目录（`/usr/src/pf.senguo.cc`）运行 `python -m pytest`，不要从 `pfsource/` 运行
+- 任务 app 未运行时，在既有授权内按任务启动配置启动 app，复用已就绪且归属匹配的共享服务；容器内缺 pytest 时按 `ensure_pytest` 配置补齐
+- Docker 不可用、任务容器启动失败或容器内缺依赖时，先诊断对应容器 / 镜像环境，记录具体错误和未完成的测试；不退回宿主机补包或执行 pytest，也不修改业务代码来掩盖 `XdbSearchIP` 等依赖缺失
 - 同一任务绑定多个后端时，每个后端使用“任务 ID + repo key”生成独立 `COMPOSE_PROJECT_NAME`；容器、volume 挂载和停止命令互不复用
 - 多个后端应在 `repositories.yaml` 中配置不重叠的 `app_port_start` / `app_port_end`，基础 MySQL、Redis、RabbitMQ、Mongo 和 Docker 网络仍可共享
 - 进入真实页面流程联调前，先读取仓库 README、AGENTS、package.json、`.codex/environments/environment.toml` 启动动作及 `repositories.yaml` 中的 `auto_start_steps` / `start_commands`，在各动作指定的工作目录按既有指令启动前端服务和后端 Docker 服务，不能只启动 app。纯接口/数据库验证启动实际依赖；独立单测不因此强制启动前端或全套服务
@@ -19,12 +18,20 @@
 - 如果某个非关键动作在仓库配置中标记 `allow_failure: true`，仍需记录失败原因并确认它不影响本次被测页面或接口；不能把配置中的容错标记理解成跳过后端服务
 - 只有所有本次流程实际依赖的后端 Docker 服务和前端进程就绪、代理指向当前任务后端后，才能进入浏览器真实测试；服务未就绪时先诊断并记录阻塞
 
-推荐容器测试命令：
+以下命令均在任务后端仓库根目录执行。任务 app 未运行时，按既有授权启动：
 
 ```bash
 docker compose --env-file docker/.env --env-file docker/.task.env \
   -f docker/docker-compose.yml -f docker/docker-compose.task.yml \
-  exec app sh -lc 'cd /usr/src/pf.senguo.cc && python -m pytest ...'
+  up -d app
+```
+
+容器测试命令：
+
+```bash
+docker compose --env-file docker/.env --env-file docker/.task.env \
+  -f docker/docker-compose.yml -f docker/docker-compose.task.yml \
+  exec -T app sh -lc 'cd /usr/src/pf.senguo.cc && python -m pytest ...'
 ```
 
 ## 前端本地依赖环境

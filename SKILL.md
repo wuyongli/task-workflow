@@ -385,7 +385,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_mys
 
 ### 后端测试环境
 
-适用于 `producer-backend` 任务工作区。优先在当前任务自己的后端仓库根目录运行测试；已知宿主机依赖不完整或 Python 版本不匹配时，直接切换到当前任务 Docker app 容器，不重复制造相同的宿主失败，不要误用共享主仓容器。详细命令见 [runtime.md](references/runtime.md)。
+配置为 `shared-backend-app` 的后端任务测试统一在当前任务专属 Docker app 容器中执行，不先尝试宿主机 pytest。从任务后端仓库根目录发起命令，容器内也切到仓库根目录运行测试；app 未启动时按既有授权启动，Docker 不可用时记录环境阻断，不退回宿主机补包或测试。详细规则与命令见 [runtime.md](references/runtime.md)。
 
 ### 前端验证环境
 
