@@ -181,7 +181,7 @@ def _repo_pr_platform(repo_cfg: dict[str, Any]) -> str | None:
         return "平板端"
     if repo_kind == "mobile_frontend" or any(marker in descriptor for marker in ("手机", "移动端", "mobile", "mproducer")):
         return "手机端"
-    if repo_kind == "pc_frontend" or re.search(r"(?<![a-z])pc(?![a-z])|pcfrontend", descriptor):
+    if re.search(r"(?<![a-z])pc(?:frontend)?(?![a-z])", descriptor):
         return "PC端"
     return None
 

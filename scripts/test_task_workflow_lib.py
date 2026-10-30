@@ -1658,7 +1658,15 @@ class PublishTargetTests(unittest.TestCase):
                 )
 
     def test_build_pr_default_title_requires_known_platform_for_other_repos(self) -> None:
-        for unknown_config in [None, {"key": "unknown"}, {"key": "grpc-client"}, {"key": "unknown", "pr_platform": ""}]:
+        for unknown_config in [
+            None,
+            {"key": "unknown"},
+            {"key": "grpc-client"},
+            {"key": "grpc-client", "runtime": {"mode": "patch-node-frontend-environment"}},
+            {"key": "rpc-client", "notes": "小程序端", "runtime": {"mode": "patch-node-frontend-environment"}},
+            {"key": "grpcfrontend-client", "runtime": {"mode": "patch-node-frontend-environment"}},
+            {"key": "unknown", "pr_platform": ""},
+        ]:
             with self.subTest(config=unknown_config):
                 repo_cfg_by_key = {"api": {"key": "api", "notes": "后端"}}
                 if unknown_config is not None:
