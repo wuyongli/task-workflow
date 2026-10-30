@@ -249,7 +249,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_ru
 - 目标仓库按当前任务绑定仓库动态识别；多目标默认并行，单个仓库失败不阻断其它仓库
 - 创建前要在候选绑定仓库基础上多做一次实际改动检查：相对远程默认分支没有 diff 的仓库跳过创建，并在结果里说明“无本次 PR 改动”
 - 源分支直接使用 `meta.yaml` 记录的任务分支；目标分支使用各仓库远程默认分支，用户明确指定目标分支时才覆盖
-- 未指定 `--title` 时，PR 标题默认按 `任务名（是否有前端/后端）` 生成；括号只基于实际有 diff、准备创建 PR 的仓库集合判断，不基于任务曾经绑定过的全部仓库判断
+- 未指定 `--title` 时，PR 标题默认按 `任务名（有其他配套端）` 生成：只读核对本阶段全部绑定仓库的实际 diff，排除当前仓库，列出其余仓库的 PC端、手机端、后端、平板端等具体端标签并去重；即使只给一个仓库创建 PR，也不能漏掉本任务其它仓库的配套改动。无其它配套改动时省略括号，端标签可用 `repositories.yaml` 的 `pr_platform` 明确配置
 - PR 标题里的日期表示本次 PR 操作日 / 预期上线日，不是任务创建日；新建 PR 时通常由 `sg pr create` 按当天自动拼接，已有 PR 或用户指定非当天上线日时，应回读完整标题后最小更新标题开头第一个 `#YYYYMMDD#`
 - 创建前先确认仓库存在、当前分支与 `meta.yaml` 记录分支一致、工作区干净，并确认当前 Codex 会话实际执行到的全局 `sg` 路径、`sg --version` 和 `sg pr create --help`
 - `sg` CLI 是全局工具，能力检查不按仓库分别判断；但 `sg pr status`、`sg pr create`、`sg pr view` 等具体操作必须在目标仓库根目录执行
@@ -262,7 +262,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_ru
 - 如果用户提供 `--task-link` 或自然语言里的 BBS 链接，使用新版 `sg` 支持的 `--task-link <BBS链接>` 关联 BBS；如果用户只说 `bbsid: 52040` 这类编号，按既有上下文能确定完整 BBS 链接时再生成 `--task-link`，不要把编号直接传给 `--task-link`
 - `--reviewer` 可重复；取消 WIP 只影响是否追加 `--wip`，不改变目标分支、标题、描述、reviewer 或授权边界
 - 若已有开放 PR，默认输出其状态和链接；如果本次明确是在继续准备上线或重新操作 PR，允许只更新标题中的操作日期 / 上线日期，但不得自动关闭、合并或重试已有 PR
-- 更新已有 PR 标题前必须先用 `sg pr view` 回读完整标题；更新日期时只替换标题开头第一个 `#YYYYMMDD#`，不得替换后续 `#BBS#`；编辑后再次 `sg pr view` 确认完整标题，保留 `WIP:`、BBS 编号、任务名和“有前端/有后端”后缀
+- 更新已有 PR 标题前必须先用 `sg pr view` 回读完整标题；更新日期时只替换标题开头第一个 `#YYYYMMDD#`，不得替换后续 `#BBS#`；编辑后再次 `sg pr view` 确认完整标题，保留 `WIP:`、BBS 编号、任务名和配套端后缀
 
 ### 8. Save / Push
 

@@ -1483,7 +1483,7 @@ class PublishTargetTests(unittest.TestCase):
             ["senguo-pf-easy-mobile"],
         )
 
-    def test_build_pr_default_title_marks_backend_pr_when_task_has_frontend(self) -> None:
+    def test_build_pr_default_title_marks_backend_pr_with_mobile_platform(self) -> None:
         task_meta = {
             "task_id": "2026-08-20-采购优化",
             "bbs_id": "52300",
@@ -1510,7 +1510,7 @@ class PublishTargetTests(unittest.TestCase):
                 ["producer-backend", "pf-mproducer-supplier"],
                 repo_cfg_by_key,
             ),
-            "采购优化（有前端）",
+            "采购优化（有手机端）",
         )
 
     def test_build_pr_default_title_marks_frontend_pr_when_task_has_backend(self) -> None:
@@ -1556,7 +1556,7 @@ class PublishTargetTests(unittest.TestCase):
             "采购优化",
         )
 
-    def test_build_pr_default_title_does_not_mark_frontend_for_another_frontend_repo(self) -> None:
+    def test_build_pr_default_title_marks_other_frontend_platform(self) -> None:
         task_meta = {
             "task_id": "2026-08-20-采购优化",
             "current_stage": {"task_name": "采购优化", "bbs_id": "#53850"},
@@ -1581,10 +1581,92 @@ class PublishTargetTests(unittest.TestCase):
                 ["pf-mproducer-supplier", "pf-producer-supplier"],
                 repo_cfg_by_key,
             ),
-            "采购优化",
+            "采购优化（有PC端）",
         )
 
-    def test_build_pr_default_title_uses_actual_pr_repo_set_not_all_bound_repos(self) -> None:
+    def test_build_pr_default_title_lists_all_other_platforms_for_each_repo(self) -> None:
+        task_meta = {"current_task_name": "采购优化"}
+        repo_cfg_by_key = {
+            "api": {"key": "api", "runtime": {"mode": "shared-backend-app"}},
+            "phone": {"key": "phone", "notes": "手机前端", "runtime": {"mode": "patch-node-frontend-environment"}},
+            "desktop": {"key": "desktop", "notes": "PC前端", "runtime": {"mode": "patch-node-frontend-environment"}},
+            "pad": {"key": "pad", "notes": "平板端"},
+        }
+        changed_repos = list(repo_cfg_by_key)
+        expected = {
+            "api": "采购优化（有PC端、手机端、平板端）",
+            "phone": "采购优化（有PC端、后端、平板端）",
+            "desktop": "采购优化（有手机端、后端、平板端）",
+            "pad": "采购优化（有PC端、手机端、后端）",
+        }
+        for repo_key, title in expected.items():
+            with self.subTest(repo_key=repo_key):
+                self.assertEqual(lib.build_pr_default_title(task_meta, repo_key, changed_repos, repo_cfg_by_key), title)
+                self.assertEqual(lib.build_pr_default_title(task_meta, repo_key, changed_repos[::-1], repo_cfg_by_key), title)
+
+    def test_build_pr_default_title_deduplicates_other_repo_platforms(self) -> None:
+        repo_cfg_by_key = {
+            "api": {"key": "api", "runtime": {"mode": "shared-backend-app"}},
+            "phone-a": {"key": "phone-a", "notes": "手机前端", "runtime": {"mode": "patch-node-frontend-environment"}},
+            "phone-b": {"key": "phone-b", "notes": "手机前端", "runtime": {"mode": "patch-node-frontend-environment"}},
+        }
+        self.assertEqual(
+            lib.build_pr_default_title({"current_task_name": "采购优化"}, "api", list(repo_cfg_by_key), repo_cfg_by_key),
+            "采购优化（有手机端）",
+        )
+        self.assertEqual(
+            lib.build_pr_default_title({"current_task_name": "采购优化"}, "phone-a", list(repo_cfg_by_key), repo_cfg_by_key),
+            "采购优化（有手机端、后端）",
+        )
+
+    def test_build_pr_default_title_supports_explicit_platform_for_other_clients(self) -> None:
+        repo_cfg_by_key = {
+            "api": {"key": "api", "runtime": {"mode": "shared-backend-app"}},
+            "custom-mobile": {"key": "custom-mobile", "pr_platform": "小程序端", "runtime": {"mode": "patch-node-frontend-environment"}},
+        }
+        self.assertEqual(
+            lib.build_pr_default_title({"current_task_name": "采购优化"}, "api", list(repo_cfg_by_key), repo_cfg_by_key),
+            "采购优化（有小程序端）",
+        )
+
+    def test_build_pr_default_title_recognizes_platforms_without_runtime_config(self) -> None:
+        for repo_config, label in [
+            ({"key": "demo", "aliases": ["产地PC前端"]}, "PC端"),
+            ({"key": "demo", "notes": "手机端"}, "手机端"),
+            ({"key": "demo-mobile"}, "手机端"),
+            ({"key": "demo", "aliases": ["批发后端"]}, "后端"),
+        ]:
+            with self.subTest(config=repo_config):
+                self.assertEqual(
+                    lib.build_pr_default_title(
+                        {"current_task_name": "采购优化"}, "api", ["api", "client"], {"client": repo_config},
+                    ),
+                    f"采购优化（有{label}）",
+                )
+
+    def test_build_pr_default_title_recognizes_tablet_before_mobile(self) -> None:
+        for tablet_config in [
+            {"key": "tablet-mobile", "runtime": {"mode": "patch-node-frontend-environment"}},
+            {"key": "ipad-app"},
+            {"key": "demo", "notes": "平板端"},
+        ]:
+            with self.subTest(config=tablet_config):
+                repo_cfg_by_key = {"api": {"key": "api", "notes": "后端"}, "pad": tablet_config}
+                self.assertEqual(
+                    lib.build_pr_default_title({"current_task_name": "采购优化"}, "api", ["api", "pad"], repo_cfg_by_key),
+                    "采购优化（有平板端）",
+                )
+
+    def test_build_pr_default_title_requires_known_platform_for_other_repos(self) -> None:
+        for unknown_config in [None, {"key": "unknown"}, {"key": "grpc-client"}, {"key": "unknown", "pr_platform": ""}]:
+            with self.subTest(config=unknown_config):
+                repo_cfg_by_key = {"api": {"key": "api", "notes": "后端"}}
+                if unknown_config is not None:
+                    repo_cfg_by_key["unknown"] = unknown_config
+                with self.assertRaisesRegex(ValueError, "unknown.*pr_platform"):
+                    lib.build_pr_default_title({"current_task_name": "采购优化"}, "api", ["api", "unknown"], repo_cfg_by_key)
+
+    def test_build_pr_default_title_uses_actual_changed_repo_set_not_all_bound_repos(self) -> None:
         task_meta = {
             "task_id": "2026-08-20-采购优化",
             "current_stage": {"task_name": "采购优化"},

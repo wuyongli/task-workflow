@@ -166,33 +166,48 @@ def current_task_title_name(task_meta: dict[str, Any]) -> str:
     return raw_task_name.strip()
 
 
+def _repo_pr_platform(repo_cfg: dict[str, Any]) -> str | None:
+    explicit_platform = repo_cfg.get("pr_platform")
+    if explicit_platform is not None:
+        return explicit_platform.strip() if isinstance(explicit_platform, str) and explicit_platform.strip() else None
+
+    repo_kind = classify_repo_publish_kind(repo_cfg)
+    descriptor = " ".join(
+        [str(repo_cfg.get("notes") or ""), *_repo_aliases(str(repo_cfg.get("key") or ""), repo_cfg)]
+    ).lower()
+    if repo_kind == "backend" or any(marker in descriptor for marker in ("后端", "backend")):
+        return "后端"
+    if any(marker in descriptor for marker in ("平板", "tablet", "ipad")):
+        return "平板端"
+    if repo_kind == "mobile_frontend" or any(marker in descriptor for marker in ("手机", "移动端", "mobile", "mproducer")):
+        return "手机端"
+    if repo_kind == "pc_frontend" or re.search(r"(?<![a-z])pc(?![a-z])|pcfrontend", descriptor):
+        return "PC端"
+    return None
+
+
 def build_pr_default_title(
     task_meta: dict[str, Any],
     target_repo_key: str,
     changed_pr_repo_keys: list[str],
     repo_cfg_by_key: dict[str, dict[str, Any]],
 ) -> str:
+    """List companion platforms from task-wide changed repos, excluding the target repo."""
     title = current_task_title_name(task_meta)
 
-    repo_kinds: dict[str, str] = {}
+    other_platforms: set[str] = set()
     for repo_key in changed_pr_repo_keys:
-        repo_cfg = repo_cfg_by_key.get(repo_key)
-        if repo_cfg is None:
+        if repo_key == target_repo_key:
             continue
-        repo_kind = classify_repo_publish_kind(repo_cfg)
-        if repo_kind:
-            repo_kinds[repo_key] = repo_kind
+        repo_cfg = repo_cfg_by_key.get(repo_key)
+        platform = _repo_pr_platform(repo_cfg) if repo_cfg is not None else None
+        if not platform:
+            raise ValueError(f"repo {repo_key} has unknown PR platform; configure pr_platform in repositories.yaml")
+        other_platforms.add(platform)
 
-    target_kind = repo_kinds.get(target_repo_key)
-    has_backend = any(repo_kind == "backend" for repo_kind in repo_kinds.values())
-    has_frontend = any(repo_kind in {"mobile_frontend", "pc_frontend"} for repo_kind in repo_kinds.values())
-    suffix = ""
-    if target_kind == "backend" and has_frontend:
-        suffix = "（有前端）"
-    elif target_kind in {"mobile_frontend", "pc_frontend"} and has_backend:
-        suffix = "（有后端）"
-
-    return title + suffix
+    platform_order = {label: index for index, label in enumerate(("PC端", "手机端", "后端", "平板端"))}
+    labels = sorted(other_platforms, key=lambda label: (platform_order.get(label, len(platform_order)), label))
+    return title + (f"（有{'、'.join(labels)}）" if labels else "")
 
 
 def build_task_compose_name(task_id: str, repo_key: str) -> str:

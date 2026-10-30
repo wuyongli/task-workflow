@@ -66,6 +66,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_ru
 - `path`: main repo path under `/Users/wuyongli/Documents/sg-project`
 - `remote`: clone URL when needed
 - `notes`: optional brief remarks
+- `pr_platform`: optional concrete platform label for PR companion suffixes, e.g. `PC端` / `手机端` / `后端` / `平板端` / `小程序端`; overrides inferred labels without changing runtime or publish behavior
 - `runtime`: optional runtime bootstrap rules for task clones
 
 `runtime` 支持：

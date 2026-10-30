@@ -3,6 +3,7 @@ repositories:
     path: "/Users/wuyongli/Documents/sg-project/producer-backend"
     remote: "git@example.com:group/producer-backend.git"
     notes: "产地通后端"
+    pr_platform: "后端"
     aliases:
       - "产地后端"
       - "产地通后端"
@@ -51,6 +52,7 @@ repositories:
     path: "/Users/wuyongli/Documents/sg-project/pf-backend"
     remote: "git@example.com:group/pf-backend.git"
     notes: "批发后端"
+    pr_platform: "后端"
     aliases:
       - "批发后端"
     runtime:
@@ -98,6 +100,7 @@ repositories:
     path: "/Users/wuyongli/Documents/sg-project/senguo-pf-easy-mobile"
     remote: "git@example.com:group/senguo-pf-easy-mobile.git"
     notes: "批发手机前端"
+    pr_platform: "手机端"
     aliases:
       - "批发手机前端"
       - "批发移动端"
@@ -131,6 +134,7 @@ repositories:
     path: "/Users/wuyongli/Documents/sg-project/senguo-pf-manage-frontend"
     remote: "git@example.com:group/senguo-pf-manage-frontend.git"
     notes: "批发 PC 前端"
+    pr_platform: "PC端"
     aliases:
       - "批发PC前端"
       - "批发pc前端"
@@ -163,6 +167,7 @@ repositories:
     path: "/Users/wuyongli/Documents/sg-project/pf-mproducer-supplier"
     remote: "git@example.com:group/pf-mproducer-supplier.git"
     notes: "产地通手机前端"
+    pr_platform: "手机端"
     aliases:
       - "产地手机前端"
       - "产地通手机前端"
@@ -193,6 +198,7 @@ repositories:
     path: "/Users/wuyongli/Documents/sg-project/pf-producer-supplier"
     remote: "git@example.com:group/pf-producer-supplier.git"
     notes: "产地通 PC 前端"
+    pr_platform: "PC端"
     aliases:
       - "产地PC前端"
       - "产地pc前端"
