@@ -4,6 +4,8 @@
 
 ## 启用与恢复
 
+显式命令为 `/task-workflow mode auto` 和 `/task-workflow mode manual`。前者启用当前任务空间的自动开发，后者切回常规协作，不撤销已经成立的开发授权。
+
 唯一新增机器字段为顶层 `meta.yaml.execution_mode: manual | auto`，缺省为 `manual`；非法值应报告并停止该任务，不能猜测。全任务状态列表对异常任务单独报错后继续展示其他任务，并返回非零退出码。模式属于任务空间，不写入 `current_stage` 或 `previous_phases`，也不从阶段字段推断模式；`next`、`stage` 和换会话均保持同一个开关。独立创建的其他任务空间仍缺省 manual。
 
 ```bash

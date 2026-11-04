@@ -128,3 +128,61 @@ MySQL 数据目录切换：
 - default document filenames
 
 模板：[workspace.yaml.example](workspace.yaml.example)
+
+## MySQL
+
+用于在产地后端和批发后端本地开发之间，显式切换共享 MySQL 容器的数据目录。
+
+显式命令：
+
+```text
+/task-workflow mysql <目标后端>
+```
+
+推荐命令：
+
+```bash
+python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_mysql.py "批发后端"
+python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_mysql.py "产地后端"
+```
+
+关键边界：
+- 只处理本地 `pf-mysql-1` 的 `/var/lib/mysql` 数据目录切换
+- 不切换 Redis、Mongo、RabbitMQ、Nginx
+- 不补字段、不导数据、不执行迁移
+- 当前数据目录已经匹配目标后端时，直接 no-op
+- 当前数据目录不匹配时，只重建 MySQL 容器，输出切换前后目录
+- 切换会让正在连接 MySQL 的任务 app 短暂断开，必要时重启对应后端 app
+
+## Portal
+
+用于在浏览器里快速查看当前开发中任务对应的手机端、PC 端和后端端口，不再手工记忆任务与端口的映射关系。
+
+常用入口：
+
+1. 静态快照页
+
+```bash
+python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/render_task_dev_portal.py
+```
+
+默认输出：
+- `/Users/wuyongli/Documents/sg-project/_workspace/task-dev-portal.html`
+
+2. 刷新即最新的本地页
+
+```bash
+python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/serve_task_dev_portal.py
+```
+
+默认地址：
+- `http://127.0.0.1:8765/`
+
+关键规则：
+- 页面数据来自 `_docs/*/meta.yaml`、前端 `.codex/task-runtime.env`、后端 `docker/.task.env`
+- 手机端地址默认展示为 `http://pfzone.senguo.me:<port>/mproducer/`
+- PC 端地址默认展示为 `http://pfzone.senguo.me:<port>/producer/`
+- 如果你只想手动刷新页面拿到最新状态，用本地页即可；浏览器每次刷新都会重新读取最新任务、分支和端口
+- 如果只需要一个可分享或临时保存的快照页，再使用静态导出脚本
+
+MySQL 切换结果应说明目标后端、切换前后数据目录、是否 no-op 或重建 MySQL，以及是否需要重启任务 app。

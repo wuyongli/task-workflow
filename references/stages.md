@@ -43,6 +43,10 @@
 
 ## `next` 规则
 
+```text
+/task-workflow next <新任务名> [--bbs-id <编号>] [--repo <repo-key或自然目标名称> ...]
+```
+
 - `next` 不是“继续原任务”，而是在原工作空间内开启一个新的阶段任务
 - 用户明确调用 `next` 时，表示先暂停当前阶段并开启下一阶段；不等于确认上一阶段已经完成或已上线
 - `next` 允许从 `方案中` / `开发中` / `测试中` / `暂停中` / `已完成` 进入下一阶段
@@ -76,6 +80,10 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_works
 ```
 
 ## `stage` 规则
+
+```text
+/task-workflow stage <阶段编号或阶段任务名>
+```
 
 - `stage` 用于在已有多阶段工作空间内切换当前阶段，不创建新阶段
 - 典型场景：已经 `next` 到二期后，用户要求临时切回一期分支处理问题

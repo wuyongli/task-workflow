@@ -1,650 +1,139 @@
 ---
 name: task-workflow
-description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的多仓任务创建、恢复、自动开发模式、代码审查、提交推送、PR、发布、同步、阶段切换或生成公示文档时使用。"
+description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的多仓任务创建、恢复、自动开发模式、BBS 关联 Bug 处理、代码审查、提交推送、PR、发布、同步、阶段切换或生成公示文档时使用。"
 ---
 
 # 任务工作流
 
-## 概览
-
-这个 skill 用于 `/Users/wuyongli/Documents/sg-project/_workspace` 下按任务隔离的多仓库 clone 工作流。
-
-核心模型：
-- 一个任务 = 一个文档目录 + 一个任务代码目录
-- 任务文档放在 `_docs/<task-id>`
-- 仓库真实 clone 放在 `_tasks/<task-id>/<repo>__<task-name>`
-- 任务绑定以路径名为准，不以分支名为准
-- 一个工作空间可以承载同一长期主题下的多个阶段任务，但任一时刻只应有一个“当前阶段任务”
-- 多阶段任务必须区分每个阶段自己的状态；顶层 `status` 表示当前阶段状态，历史阶段状态记录在 `previous_phases`
-- 任务或阶段可以带可选 `bbs_id`，用于记录内部需求反馈编号
-
-文档分层：
-- `meta.yaml`：机器事实，只记录状态、分支、当前阶段、当前主计划、可选 `bbs_id` 等可恢复信息
-- `index.md`：人读任务摘要，只保留当前状态、当前主线、当前阻塞、下一步和当前入口
-- `plan.md`：当前有效方案，只保留已经成立的方案结论、核心决策原因、开发方案、数据变更和上线方案
-- `progress.md`：执行记录，只记录实际做了什么、验证了什么、发布了什么、阻塞和下一步
-- `decision-log.md`：方案讨论过程容器；用于承接候选方案、取舍推演、被否方案、口径变化原因等不适合长期塞进 `plan.md` 的讨论细节
-- `*-plan.md` / `appendix-*.md`：仅承接稳定的模块子方案或参考资料，不承接讨论流水
-- `sql/`、`assets/`：承接上线 SQL 和截图、原型、数据样本等过程文件，避免非正式文档散落在任务根目录
-
-文档职责边界：
-- 当前应该按什么方案做，写入 `plan.md`
-- 实际推进到了哪一步，写入 `progress.md`
-- 方案讨论过程、候选路径和取舍推演，写入 `decision-log.md`
-- 当前稳定结论和核心决策原因，提炼回 `plan.md`
-- 当前状态、当前主线和下一步入口摘要，写入 `index.md`
-- 脚本和 AI 恢复上下文所需的机器事实，写入 `meta.yaml`
-- 任务过程中产生的不确定材料，先按文件形态放入 `assets/`，不要为了内容不确定而新建零散 markdown
-
-固定路径：
-- 工作区根目录：`/Users/wuyongli/Documents/sg-project/_workspace`
-- 任务文档目录：`/Users/wuyongli/Documents/sg-project/_workspace/_docs/<task-id>`
-- 任务代码目录：`/Users/wuyongli/Documents/sg-project/_workspace/_tasks/<task-id>`
-- 运行配置目录：`/Users/wuyongli/Documents/sg-project/_workspace/config`
-
-任务命名规则：
-- task id 使用 `YYYY-MM-DD-<原始任务名>`
-- 仓库目录名使用 `<repo-key>__<原始任务名>`
-- 分支名默认使用不带日期前缀的原始任务名
-
-## 工作流
-
-### 执行模式
-
-任务空间用顶层 `meta.yaml.execution_mode` 区分 `manual` / `auto`，缺省为 `manual`。用户要求“开启自动开发模式”“继续自动开发”，或恢复的任务空间为 `auto` 且本轮要求继续任务时，读取 [auto-mode.md](references/auto-mode.md)。
-
-- `/task-workflow mode auto`：启用当前任务空间自动模式，在已明确范围内连续分析、确定方案、开发、自测、审查修复并推送任务分支。
-- `/task-workflow mode manual`：切回常规协作，不撤销已经成立的开发授权。
-- 模式按任务空间保存，不按阶段、仓库、分支、会话或整个工作流全局生效；`next` 和 `stage` 均保持任务空间模式，新阶段仍需按自己的 plan 核对范围与开发准入。
-- 只新增 `execution_mode`；执行范围和特殊限制写当前 plan，进度和阻塞复用 `progress.md`。本轮“只分析 / 只审查 / 只保存”等明确限制优先，单独 `load` 不触发开发。
-- 自动模式是协作规则，不会创建定时器、会话或后台调度。
-- 自动闭环包含适用的真实页面、接口和数据库结果测试，优先使用 Codex 内置浏览器；仅单测通过或代码已推送不代表闭环完成。执行与阻塞规则见 [verification.md](references/verification.md)。
-- 查看当前任务 Docker 日志是通用排障取证能力，不受执行模式限制；容器定位和日志读取方式见 [verification.md](references/verification.md)。
-- 自动开发里程碑按 [auto-mode.md](references/auto-mode.md) 推送到钉钉群“国庆任务进度推送”；消息必须写任务名称和阶段，BBS 编号只作辅助，不能只发 ID。
-- 多任务假期安排按 [dispatch.md](references/dispatch.md) 执行。`scripts/task_dispatch.py` 提供持久化串行派发、人工追加、交接和通知记录；Codex 总调度负责会话工具与外部动作，定时唤醒须另行配置，初始化队列默认关闭。
-
-细节按需读取：
-- Review / codeview 细则见 [review.md](references/review.md)
-- 文档模型与模板规则见 [docs-model.md](references/docs-model.md)
-- 阶段化、`next`、产品子任务拆分规则见 [stages.md](references/stages.md)
-- 多任务自动开发总调度约束见 [dispatch.md](references/dispatch.md)
-- 发布、同步、推送和目标识别规则见 [publish-sync.md](references/publish-sync.md)
-- runtime、后端测试环境和配置字段见 [runtime.md](references/runtime.md)
-- 开发、Review、保存推送、PR 和发布之间的验证边界、去重与历史证据见 [verification.md](references/verification.md)
-- 公示文档生成与钉钉投递规则见 [doc.md](references/doc.md)
-
-### 1. Init
-
-用于 `_workspace` 还没有初始化的时候。
-
-预期结果：
-- 创建 `_workspace/config`
-- 创建 `_workspace/_tasks`
-- 创建 `_workspace/_docs`
-- 从 `references/` 补齐缺失的运行配置
-
-推荐命令：
-
-```bash
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/init_workspace.py
-```
-
-### 2. Create
-
-用于创建新任务工作区。
-
-默认流程：
-1. 规范化 task id 为 `YYYY-MM-DD-<任务名>`
-2. 创建 `_tasks/<task-id>` 和 `_docs/<task-id>`
-3. 把每个选中的仓库 clone 到 `_tasks/<task-id>/<repo>__<task-name>`
-4. 基于远端默认分支最新提交创建或重置任务分支
-5. 从主仓库或任务仓库模板补齐缺失的本地运行配置
-6. 生成 `index.md`、种子版 `plan.md`、`progress.md`、`meta.yaml`
-
-路径绑定规则：
-- 优先通过当前路径 `_tasks/<task-id>/...` 识别任务
-- 再从 `_docs/<task-id>` 加载文档
-- 文档里记录的分支只作为一致性校验，不作为主绑定依据
-
-推荐命令：
-
-```bash
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/create_task_workspace.py "原始任务名" --repo producer-backend --repo pf-mproducer-supplier
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/create_task_workspace.py "原始任务名" --bbs-id 53850 --repo producer-backend
-```
-
-运行说明：
-- `create_task_workspace.py` 只补齐缺失的本地运行配置，不会覆盖任务 clone 里已有文件
-- `--bbs-id` 是选填；用户提供内部需求反馈编号时才写入 `meta.yaml` 和初始文档，不提供时不生成空编号占位
-- 不会自动安装项目业务依赖；`producer-backend` 仅会为任务 app 容器补齐必要测试工具
-- 任务分支只以远端默认分支作为起点，不自动跟踪 `origin/master` 或其他默认分支；首次推送任务分支时再建立自己的 upstream
-- 如果用户一开始就明确“一期 / 二期 / 分阶段 / 先做 A 再做 B”，从创建任务开始读取 [stages.md](references/stages.md)，按阶段化文档模型处理
-- 对于配置为 `shared-backend-app` 的后端，会生成任务及仓库级 Docker 辅助文件；同一任务的多个后端各自启动独立 `app` 容器，同时复用共享基础设施
-- 对于配置为 `shared-backend-app` 的后端，任务 app 启动后会检查容器内是否可用 `pytest`；缺失时自动安装 `pytest==7.4.4`
-- 当 `repositories.yaml` 开启 `auto_start_on_prepare` 时，运行配置准备阶段也会执行配置里的自动启动步骤
-- 对于配置为 `patch-node-frontend-environment` 的前端，运行配置准备阶段会检查并修复当前 Node 平台缺失的原生 optional 依赖；这是本地环境准备，不是业务代码改动
-- 如果主仓本地配置后续发生变化，可以重新执行：
-
-```bash
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/prepare_task_runtime.py "YYYY-MM-DD-原始任务名"
-```
-
-### 3. Load
-
-用于在新会话里恢复任务上下文。
-
-默认恢复协议：
-1. 先读 `meta.yaml`
-2. 用 `meta.yaml` 确认任务状态、仓库绑定、记录分支、恢复状态等机器事实
-3. 再读 `index.md` 获取给人看的当前摘要
-4. 当需要任务目标或方案细节时读 `plan.md`
-5. 当需要当前进展、自测结果或阻塞时读 `progress.md`
-6. 当需要理解“为什么这样定”时，先读 `plan.md` 的核心决策与原因；如果存在 `decision-log.md`，再读讨论过程和历史推导
-
-恢复任务时的协作原则：
-- `meta.yaml` 是 AI 恢复上下文时的第一事实入口，不是补充校验文件
-- `index.md` 是给人读的摘要页，不负责定义机器事实
-- 如果 `index.md` 与 `meta.yaml` 不一致，优先以 `meta.yaml` 为准，再在同一轮把摘要文档修正到一致
-- 如果没有先读 `meta.yaml`，就不要声称已经完成任务状态核对、仓库绑定核对或记录分支核对
-- 如果任务已经进入多阶段模式，先用 `meta.yaml` 确认当前阶段、当前阶段状态、当前分支、当前 plan 和可选 `bbs_id`，再用 `index.md` 理解当前阶段与历史阶段的关系
-
-路径查找规则：
-- 如果当前仓库路径匹配 `_tasks/<task-id>/<repo-dir>`，就直接从 `<task-id>` 反查任务
-- 然后去 `_docs/<task-id>` 读取文档
-- 如果当前分支和文档记录不一致，需要显式指出，并在合适时更新文档
-
-### 4. Progress
-
-用于任务已经推进，文档也需要同步更新的时候。
-
-默认更新协议：
-1. 先判断这次更新是否影响机器事实
-2. 如果影响了任务状态、`resume_status`、仓库绑定、记录分支，先更新 `meta.yaml`
-3. 再更新 `index.md` 的当前摘要
-4. 如果这次推进改变了方案结论、核心决策原因、开发方案或上线口径，再更新 `plan.md`
-5. 如果这次推进只是执行、验证、发布、阻塞或下一步变化，再更新 `progress.md`
-6. 如果这次推进处于方案讨论阶段，且出现候选方案、取舍推演、被否方案或口径变化，更新 `decision-log.md`
-7. 如果讨论已经形成稳定结论，把当前有效结论和核心原因回写到 `plan.md`
-
-更新原则：
-- `index.md` 只保留当前快照
-- `index.md` 不承载方案摘要，超过一屏时应先瘦身
-- `plan.md` 只保留当前有效方案、核心决策原因和执行依据
-- `progress.md` 只记录实际进展、验证结果、发布记录、阻塞与变更历史
-- `decision-log.md` 承接方案讨论过程；简单任务可不创建，复杂方案讨论应主动创建或更新
-- `meta.yaml` 保存最小机器事实
-- 不允许让 `index.md` 比 `meta.yaml` 更“新”
-- 更新文档时，优先整段重写当前章节并归并重复内容，不要只在原文后面继续追加碎片信息
-- 如果某个结论、方案或进展已经被新内容替代，应直接覆盖旧表述，而不是保留多个版本并列
-- 不要把运维噪音、启动端口、白屏排查等运行细节写进 `progress.md`
-- 文档拆分、`decision-log.md`、种子版 / 正式版 plan、子文档单一来源等细则见 [docs-model.md](references/docs-model.md)
-- 阶段化和产品子任务拆分细则见 [stages.md](references/stages.md)
-
-任务状态固定为：
-- `方案中`
-- `开发中`
-- `测试中`
-- `暂停中`
-- `已完成`
-
-`plan.md` 默认先用种子版结构；任务进入深入方案阶段后再扩为正式版。涉及后端表 / 字段 / 索引调整时，数据变更与上线方案优先沿用 `product-copilot-rules` 定义的统一格式。
-
-### 5. Publish
-
-用于本地开发和验收完成后，把当前任务的指定仓库发布到测试服。
-
-显式命令：
-
-```text
-/task-workflow publish [目标1] [目标2] [目标3...]
-```
-
-用户可以直接用自然语言描述发布目标。执行前必须读取 [publish-sync.md](references/publish-sync.md)。
-
-关键边界：
-- 用户显式输入 `/task-workflow publish ...` 时，视为已授权直接执行发布动作
-- 默认不指定目标时，发布当前任务下全部绑定仓库
-- 发布目标按当前任务绑定仓库动态识别，不依赖固定中文名称
-- 多目标发布默认并行；单个目标失败不阻断其它目标
-- 普通发布正式执行前，先按完全相同的目标集合调用现有 `clean-develop` 指令，删除目标仓库的本地 `develop`；清理成功或 no-op 后再执行发布。目标已处于 `develop` 合并冲突或冲突重试现场时保留当前分支，按冲突规则继续。不得删除或修改远程 `origin/develop`
-- 配置为 `patch-node-frontend-environment` 的前端，执行 `sg publish local` 前只自动准备当前 Node 平台缺失的原生 optional 依赖；不要执行完整 runtime prepare，避免改写端口、代理或 `environment.toml`
-- 不能只看退出码；前端以明确终端成功信号，或退出码为 0 且精确匹配本次执行的 CLI `status: success` 日志作为 CLI 发布成功证据
-- 缺少两种成功信号时标记为 `UNCERTAIN` 并停止，不自动重复发布
-- `sg publish` 停在 `develop` 合并冲突时，保留冲突现场并优先在 `develop` 自动解决明确冲突
-- 从 `develop` 重试发布成功后，必须切回 `meta.yaml` 记录的任务分支
-
-### 6. Sync
-
-用于任务周期较长时，把当前任务下的仓库同步远程主线代码，避免和主线落后太多。
-
-显式命令：
-
-```text
-/task-workflow sync [目标1] [目标2] [...]
-```
-
-执行前必须读取 [publish-sync.md](references/publish-sync.md)。
-
-关键边界：
-- 默认不指定目标时，同步当前任务下全部绑定仓库
-- 多仓库同步默认并行
-- 有未提交本地改动的仓库不继续同步，只展示 `git status --short`
-- 同步冲突、工作区异常、分支异常或 git 报错时，只反馈事实，不自动修代码、不自动解冲突
-
-### 7. PR
-
-用于为当前任务的指定仓库创建合并请求。
-
-显式命令：
-
-```text
-/task-workflow pr [目标1] [目标2] [...] [--title <标题>] [--desc <描述>] [--reviewer <用户>]... [--task-link <BBS链接>] [--no-wip]
-```
-
-执行前必须读取 [publish-sync.md](references/publish-sync.md)。
-
-关键边界：
-- 用户显式输入 `/task-workflow pr ...` 或明确要求为指定任务仓库创建合并请求时，视为已授权创建 PR；不把“查看 PR”“检查 PR 状态”视为创建授权
-- 默认不指定目标时，为当前任务下全部绑定仓库创建 PR；指定目标时，目标表达方式与 publish / sync 相同
-- 目标仓库按当前任务绑定仓库动态识别；多目标默认并行，单个仓库失败不阻断其它仓库
-- 创建前要在候选绑定仓库基础上多做一次实际改动检查：相对远程默认分支没有 diff 的仓库跳过创建，并在结果里说明“无本次 PR 改动”
-- 源分支直接使用 `meta.yaml` 记录的任务分支；目标分支使用各仓库远程默认分支，用户明确指定目标分支时才覆盖
-- 未指定 `--title` 时，PR 标题默认按 `任务名（有其他配套端）` 生成：只读核对本阶段全部绑定仓库的实际 diff，排除当前仓库，列出其余仓库的 PC端、手机端、后端、平板端等具体端标签并去重；即使只给一个仓库创建 PR，也不能漏掉本任务其它仓库的配套改动。无其它配套改动时省略括号，端标签可用 `repositories.yaml` 的 `pr_platform` 明确配置
-- PR 标题里的日期表示本次 PR 操作日 / 预期上线日，不是任务创建日；新建 PR 时通常由 `sg pr create` 按当天自动拼接，已有 PR 或用户指定非当天上线日时，应回读完整标题后最小更新标题开头第一个 `#YYYYMMDD#`
-- 创建前先确认仓库存在、当前分支与 `meta.yaml` 记录分支一致、工作区干净，并确认当前 Codex 会话实际执行到的全局 `sg` 路径、`sg --version` 和 `sg pr create --help`
-- `sg` CLI 是全局工具，能力检查不按仓库分别判断；但 `sg pr status`、`sg pr create`、`sg pr view` 等具体操作必须在目标仓库根目录执行
-- 如果 `which -a sg` 出现多个候选，优先使用版本更高的 `sg` 绝对路径；如果 `/usr/local/bin/sg` 旧版遮蔽新版，应直接修正入口或使用新版绝对路径，不要让用户手动处理
-- 如果解析到的 `sg pr create --help` 缺少 `--task-link`、`--reviewer`、`--wip` 等当前流程需要的参数，优先判断为 `sg` 路径 / 版本错误，先修正 CLI 入口，不要降级创建一个缺少关联信息的 PR
-- `sg pr create` 参数必须以当前全局新版 `sg pr create --help` 为准；不要凭记忆把 `--task-link` 写成 `--task_link`
-- 源分支尚未推送时，允许先执行普通 `git push -u origin <当前分支>`；不自动提交、不 force-push、不改写历史
-- 默认创建 WIP PR：新版 `sg` 支持时使用 `--wip`
-- 用户传 `--no-wip`，或明确说“取消 WIP / 不要 WIP / 创建正式 PR”时，省略 `--wip`
-- 如果用户提供 `--task-link` 或自然语言里的 BBS 链接，使用新版 `sg` 支持的 `--task-link <BBS链接>` 关联 BBS；如果用户只说 `bbsid: 52040` 这类编号，按既有上下文能确定完整 BBS 链接时再生成 `--task-link`，不要把编号直接传给 `--task-link`
-- `--reviewer` 可重复；取消 WIP 只影响是否追加 `--wip`，不改变目标分支、标题、描述、reviewer 或授权边界
-- 若已有开放 PR，默认输出其状态和链接；如果本次明确是在继续准备上线或重新操作 PR，允许只更新标题中的操作日期 / 上线日期，但不得自动关闭、合并或重试已有 PR
-- 更新已有 PR 标题前必须先用 `sg pr view` 回读完整标题；更新日期时只替换标题开头第一个 `#YYYYMMDD#`，不得替换后续 `#BBS#`；编辑后再次 `sg pr view` 确认完整标题，保留 `WIP:`、BBS 编号、任务名和配套端后缀
-
-### 8. Save / Push
-
-用于只把当前任务仓库代码保存到远程任务分支，不做代码正确性证明。
-
-执行前必须读取 [verification.md](references/verification.md) 和 [publish-sync.md](references/publish-sync.md)。
-
-关键边界：
-- `Save / Push` 只是保存代码，不等同于 Review、PR、发布、上线准备或任务完成
-- 用户表达“提交到远程 / 推送一下 / 保存代码 / 代码先提交”时，优先按 save-only 判断，除非同时明确要求 Review、PR、发布或验证
-- 目标识别、暂存范围、commit / push 和输出要求见 [publish-sync.md](references/publish-sync.md)
-- 验证边界、hook 失败和前端依赖环境边界见 [verification.md](references/verification.md)
-- 不因为 save-only 更新任务状态为 `测试中` / `已完成`，除非用户明确要求
-
-### 9. Clean Develop
-
-用于发布前清理当前任务仓库里的本地 `develop` 分支，避免后续 `sg publish` 合入远程 `develop` 前误用落后的本地分支；`publish` 会自动把它作为正式发布前置步骤调用，用户也可以单独调用。
-
-显式命令：
-
-```text
-/task-workflow clean-develop [目标1] [目标2] [...]
-```
-
-执行前必须读取 [publish-sync.md](references/publish-sync.md)。
-
-关键边界：
-- 只删除本地 `develop` 分支，不删除、不推送、不改动远程 `origin/develop`
-- 默认不指定目标时，处理当前任务下全部绑定仓库
-- 指定目标时，目标表达方式与 publish / sync 相同
-- 多仓库默认并行处理
-- 某个仓库没有本地 `develop` 分支时视为 no-op，不影响整体结果
-- 如果某个仓库当前正停在 `develop`，不删除该仓库的分支，输出当前状态并停止该仓库
-
-推荐命令：
-
-```bash
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/clean_develop_task_workspace.py "YYYY-MM-DD-原始任务名"
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/clean_develop_task_workspace.py "YYYY-MM-DD-原始任务名" 后端 手机前端
-```
-
-### 10. MySQL
-
-用于在产地后端和批发后端本地开发之间，显式切换共享 MySQL 容器的数据目录。
-
-显式命令：
-
-```text
-/task-workflow mysql <目标后端>
-```
-
-推荐命令：
-
-```bash
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_mysql.py "批发后端"
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_mysql.py "产地后端"
-```
-
-关键边界：
-- 只处理本地 `pf-mysql-1` 的 `/var/lib/mysql` 数据目录切换
-- 不切换 Redis、Mongo、RabbitMQ、Nginx
-- 不补字段、不导数据、不执行迁移
-- 当前数据目录已经匹配目标后端时，直接 no-op
-- 当前数据目录不匹配时，只重建 MySQL 容器，输出切换前后目录
-- 切换会让正在连接 MySQL 的任务 app 短暂断开，必要时重启对应后端 app
-
-### 11. Review
-
-用于任务开发完成或准备上线前，对当前任务改动做代码审查、项目规则审查、对抗式审查，并收敛测试代码。
-
-显式命令：
-
-```text
-/task-workflow review [目标1] [目标2] [...]
-/task-workflow review --code-only [目标1] [目标2] [...]
-/task-workflow codeview [目标1] [目标2] [...]
-```
-
-目标表达方式与 publish / sync 相同：
-- 默认不指定目标时，审查当前任务下全部绑定仓库
-- 指定目标时，继续使用和 publish 一样的自然语言目标识别方式，例如 `后端`、`前端`、`手机前端`、`PC前端`
-
-执行规则：
-- 用户说“代码审查”“检查代码改动”“收敛测试代码”“一次性测试可以去掉”时，按 `review` 处理
-- 未指定 `--code-only` 时执行默认完整 Review：先恢复任务上下文，再基于真实 diff、真实项目规则和真实代码路径审查
-- 用户显式使用 `--code-only`，或明确要求“只审代码”“不读取任务文档”“避免任务上下文干扰”时执行 Code Only：不恢复任务文档或复用历史需求结论，只把 `meta.yaml` 用于定位目标仓库和记录分支；仍读取真实 diff、项目级 Review 规则、相关实现、必要调用链和改动涉及的测试
-- 审查对象固定为 `meta.yaml` 记录的本地任务分支；先解析每个仓库的远程主分支，已提交改动使用三点比较 `origin/<远程主分支>...<本地任务分支>`，远程同名任务分支只用于提示本地落后或分叉，不替代审查对象；工作区 staged / unstaged / untracked 改动另行补充检查
-- 先按 [verification.md](references/verification.md) 判断本轮验证是否已经覆盖当前主张，并用跨消息历史记录收敛本轮验证范围；只有确实需要新跑前端验证时，才按 [runtime.md](references/runtime.md) 使用项目 Node 直接运行最快目标命令，并在 `node_modules` 不存在或出现 native binding 缺失时自动 prepare
-- 默认完整 Review 在同一次审查中完成三个维度：通用 code review、对抗式审查、测试代码收敛审查；不为切换维度重复读取 diff 或重复运行测试。Code Only 只做由当前代码和技术上下文支持的审查，不固定执行任务级测试收敛或上线判断
-- 默认只输出结论，不改代码；用户明确授权“明确问题直接修”“测试代码可以收敛/删除”时才修改
-- 上述为独立 review 的默认；已授权自动开发闭环中的明确缺陷修复按 [auto-mode.md](references/auto-mode.md) 执行，本轮只读限制仍优先
-- 详细流程和判断标准见 [review.md](references/review.md)
+用于 `_workspace` 下按任务隔离的多仓 clone 工作流。先识别本轮动作与授权，再按指令导航读取所需参考；不默认加载全部参考文档。
+
+## 任务模型与事实入口
+
+工作区根目录：`/Users/wuyongli/Documents/sg-project/_workspace`。
+
+| 内容 | 位置 / 规则 |
+| --- | --- |
+| 任务文档 | `_docs/<task-id>` |
+| 任务代码 | `_tasks/<task-id>/<repo-key>__<原始任务名>`，是真实 clone |
+| 运行配置 | `config` |
+| task id | `YYYY-MM-DD-<原始任务名>` |
+| 默认分支名 | 不带日期前缀的原始任务名 |
+| 工作流脚本 | `/Users/wuyongli/Documents/sg-skill/task-workflow/scripts` |
+
+- 任务优先按当前 `_tasks/<task-id>/...` 路径绑定，分支名只用于一致性校验。
+- `meta.yaml` 是状态、仓库、记录分支、当前阶段、当前主计划和可选 `bbs_id` 的机器事实入口；`index.md` 只展示摘要。
+- 普通恢复先读 `meta.yaml`，再读 `index.md`，按需读取当前 plan、`progress.md` 和 `decision-log.md`。恢复顺序及摘要不一致时的处理见 [docs-model.md](references/docs-model.md#load)。
+- Code Only 例外：仅用 meta 定位仓库和分支，不读取任务方案或进度；执行方式见下方 Review 规则。
+- 同一工作空间可承载多个阶段，任一时刻只有一个当前阶段。顶层状态表示当前阶段状态，历史状态保存在 `previous_phases`。
+- `plan.md` / 当前阶段 plan 保存当前有效方案与决策原因；`progress.md` 保存执行、验证和阻塞；`decision-log.md` 保存讨论与取舍过程。详细职责见 [docs-model.md](references/docs-model.md)。
+- 文档归并更新，避免堆叠多个有效版本。机器事实变化先更新 meta，再同步摘要；具体更新协议见 [docs-model.md](references/docs-model.md#progress)。
+
+## 指令导航
+
+显式指令以 `/task-workflow` 开头，也接受表中列出的自然语言意图。链接锚点用于定位操作，执行前同时读取对应参考的共用规则、输出要求及适用的文档同步规则；涉及验证时追加读取 [verification.md](references/verification.md)，需要准备运行环境时读取 [runtime.md](references/runtime.md)。
+
+| 指令 / 意图 | 用途 | 执行前必读 |
+| --- | --- | --- |
+| `init` | 初始化工作区目录和运行配置 | [生命周期：Init](references/lifecycle.md#init) |
+| `create` | 按选定仓库创建任务 clone 和文档，可带 BBS 编号 | [生命周期：Create](references/lifecycle.md#create) |
+| `load` | 恢复当前任务上下文 | [文档：Load](references/docs-model.md#load) |
+| `progress` | 更新机器事实、当前摘要、方案与执行记录 | [文档：Progress](references/docs-model.md#progress) |
+| `mode auto` / `mode manual` | 切换当前任务空间执行模式 | [自动模式](references/auto-mode.md) |
+| `publish [目标...]` | 发布指定仓库到测试服 | [发布：Publish](references/publish-sync.md#publish) |
+| `sync [目标...]` | 同步各仓库远程主线 | [发布：Sync](references/publish-sync.md#sync) |
+| `pr [目标...]` | 创建 PR；标题、描述、reviewer、BBS 链接和 WIP 参数见参考 | [发布：PR](references/publish-sync.md#pr) |
+| 保存 / 提交 / 推送到远程 | 只保存当前任务改动 | [Save / Push](references/publish-sync.md#save--push)、[保存边界](references/verification.md#save-only-边界) |
+| `clean-develop [目标...]` | 删除指定仓库的本地 develop | [Clean Develop](references/publish-sync.md#clean-develop) |
+| `mysql <目标后端>` | 显式切换本地共享 MySQL 数据目录 | [运行环境：MySQL](references/runtime.md#mysql) |
+| `review [目标...]` / `codeview [目标...]` | 默认完整 Review | [审查](references/review.md) |
+| `review --code-only [目标...]` | 隔离任务文档，只按代码证据审查 | [审查：模式选择](references/review.md#模式选择) |
+| `complete` | 标记当前阶段完成并停止任务 runtime | [生命周期：Complete](references/lifecycle.md#complete) |
+| `next <新任务名>` | 在原空间开启下一阶段，可带 BBS / repo 参数 | [阶段：next](references/stages.md#next-规则) |
+| `stage <阶段编号或阶段任务名>` | 切回已记录阶段及其分支 | [阶段：stage](references/stages.md#stage-规则) |
+| `cleanup` | 完成后删除任务代码及专属 app，保留文档 | [生命周期：Cleanup](references/lifecycle.md#cleanup) |
+| `status` | 查看任务状态、仓库路径和路径存在性 | [生命周期：Status](references/lifecycle.md#status) |
+| `portal` | 生成静态入口页或启动刷新即最新的本地页 | [运行环境：Portal](references/runtime.md#portal) |
+| `doc [任务名]` | 生成并投递当前阶段公示文档 | [公示文档](references/doc.md) |
+| `bug [BBS编号]` / `bug fix [BBS编号]` | 修复、验证并回写关联 Bug | [Bug 处理](references/bugs.md) |
+| `bug list/show/create [BBS编号]` | 查看列表、详情或提交问题 | [Bug 处理](references/bugs.md) |
+| 多任务假期安排 / 总调度 | 持久化串行派发、人工追加、交接和通知记录 | [总调度](references/dispatch.md) |
+
+同一轮同时要求多个动作时，分别遵守各自边界。只执行用户要求或既有授权覆盖的动作，不因执行一项自动触发下一项。
+
+## 执行模式与开发准入
+
+`meta.yaml.execution_mode` 为任务空间级 `manual` / `auto`，缺省为 `manual`；`next`、`stage` 与会话切换保持模式，新阶段仍需自己的方案和准入。
+
+- 用户开启或要求继续自动开发，以及恢复到 auto 且本轮要求继续任务时，按 [auto-mode.md](references/auto-mode.md) 连续推进已授权范围。
+- `mode manual` 关闭自主连续推进，不撤销已经成立的开发授权。暂停与 manual 不同；暂停任务需明确继续，不能因 auto 自动恢复。
+- 本轮“只分析 / 只审查 / 只保存 / 不改代码”等更窄限制优先。单独 load 或状态查询不触发开发。
+- auto 的方案、开发、自测、审查修复和提交推送授权，以及钉钉里程碑推送、资源释放和数据库范围，均按自动模式参考执行，不扩大到 PR、发布或阶段完成。
+- 自动模式本身不创建定时器、会话或后台调度。多任务安排按总调度参考执行，定时唤醒另行配置，队列初始化默认关闭。
 
 ### 开发准入闸门
 
-默认情况下，新任务创建后状态为 `方案中`。
+新任务默认处于 `方案中`。
 
-当任务处于 `方案中` 时，AI 可以做：
-- 需求分析与方案讨论
-- 读取代码、配置、文档，评估当前系统现状
-- 输出和完善开发方案
-- 更新 `index.md`、`plan.md`、`progress.md`、`meta.yaml`
-- 给出实现建议、改动清单、验证建议、风险提示
+方案中可以分析需求、读取代码 / 配置 / 文档、讨论和完善方案、更新任务文档、给出实现与验证建议。
 
-当任务处于 `方案中` 且尚未满足下述开发准入时，AI 不可以做：
-- 直接修改业务代码、配置、SQL、脚本
-- 安装依赖、执行迁移、启动正式实现
-- 把“先看下/先分析/先给方案/先评估”理解为允许开始开发
+尚未满足准入时，不得修改业务代码、配置、SQL、脚本，或安装依赖、执行迁移、启动正式实现；“先看下 / 先分析 / 先给方案 / 先评估”不构成开发授权。
 
-只有同时满足以下条件，才允许从 `方案中` 进入 `开发中`：
-1. 当前 plan 中的产品方案已经由用户确认，或由 AI 在用户明确启用的自动模式及其授权范围内确定；两种依据必须如实区分
-2. `plan.md` 中已经补齐明确的开发方案，达到可执行状态，关键待确认项已经收敛到不影响开工
-3. 用户明确表达允许开始代码工作，例如“可以开始开发”“开始改代码”“按这个方案做”，或已经启用包含开发的自动模式，且本轮没有更窄的限制
+从 `方案中` 进入 `开发中` 必须同时满足：
 
-如果用户没有明确授权开始代码工作，即使 AI 已经完成方案分析，也必须停留在 `方案中`。有效的既有自动模式授权不必重复索取；满足准入后先同步 `status`、`current_stage.status` 和 `coding_allowed: true` 再编码，不能仅凭 `auto` 自动把编码许可置为真。
+1. 当前 plan 的方案由用户确认，或由 AI 在已启用自动模式及其明确授权范围内确定。明确调用 `bug` 修复、预期行为已明确且无需新增产品决策的技术 Bug，也可由 AI 基于复现及代码证据确定最小修复方案并写入 plan；业务口径不明时仍不能开工。
+2. 当前 plan 中开发方案可执行，影响开工的关键待确认项已收敛。
+3. 用户已明确允许代码工作，或已有包含开发的自动模式授权；本轮无更窄限制。Bug 修复调用的范围内授权见 [bugs.md](references/bugs.md)。
 
-如果恢复的是一个已存在任务：
-- 当状态是 `方案中`，默认继续分析、补方案、补文档；自动模式在满足上述准入后可连续进入开发
-- 当状态是 `开发中` 或 `测试中`，可以继续既有实现与验证工作，除非用户明确要求回到方案讨论
+方案采用依据必须如实区分，不把 AI 依据预授权确定的方案写成“用户已确认”。有效的既有授权不重复索取；满足准入后，先同步 `status`、`current_stage.status`（有则同步）及 `coding_allowed: true` 再编码，不能只凭 auto 放行。
 
-### 后端测试环境
+恢复既有任务时：
 
-配置为 `shared-backend-app` 的后端任务测试统一在当前任务专属 Docker app 容器中执行，不先尝试宿主机 pytest。从任务后端仓库根目录发起命令，容器内也切到仓库根目录运行测试；app 未启动时按既有授权启动，Docker 不可用时记录环境阻断，不退回宿主机补包或测试。详细规则与命令见 [runtime.md](references/runtime.md)。
+- `方案中` 默认继续分析、补方案和文档；已有自动授权且满足准入后可继续开发。
+- `开发中` / `测试中` 可以继续既有实现与验证，除非用户明确要求回到方案讨论。
+- 固定任务状态为 `方案中`、`开发中`、`测试中`、`暂停中`、`已完成`；多阶段同步维护当前阶段与顶层状态。
 
-### 前端验证环境
+## 操作中的关键边界
 
-配置为 `patch-node-frontend-environment` 的前端，只有需要新跑 Vitest / `npm run typecheck` / `npm run build:*` 时，才按 [runtime.md](references/runtime.md) 使用项目 Node、确认 `process.arch` 并直接运行最快目标验证；仅 `node_modules` 不存在或命令出现 native binding 缺失时执行 runtime prepare。`sg publish local` 前只做原生 optional 依赖准备，不做完整 runtime prepare。小程序 / 微信开发者工具类前端按项目现有编译、预览或上传流程验证，不因为未执行 runtime prepare 就阻断 review。`@rolldown/binding-darwin-*`、`@typescript/typescript-darwin-*` 缺失默认按本地设备 / Node 架构问题处理，不当成业务代码失败。
+以下是选择动作时必须保留的边界，具体步骤、命令、异常处理及输出字段以对应参考为准。
 
-### 12. Complete
+### 目标与阶段
 
-用于编码和自测完成后标记任务完成。
+- 发布、同步、PR、清理 develop 和保存共用动态目标识别：从当前任务绑定仓库匹配后端、手机端、PC 端等；无法唯一匹配时才补问，不要求用户重复提供已知路径与分支。
+- 用户一开始明确“一期 / 二期 / 分阶段 / 先做 A 再做 B”时，即从创建起读取阶段参考，按阶段化文档模型处理；不按前端 / 后端等技术面拆产品子任务。
+- `next` 不代表上一阶段已完成；`stage` 必须同步代码分支与任务文档，目标阶段缺分支时阻断，不重建分支。
+- `complete` 只停止 runtime 并保留代码、容器和文档；`cleanup` 才删除任务代码及专属 app，不影响共享资源或任务文档。两者前置条件各按生命周期参考核对。
 
-规则：
-- 只允许从 `方案中` / `开发中` / `测试中` 标记完成
-- 标记完成前，每个记录仓库都必须工作区干净，并且已推送到远程
-- 标记完成前，尝试停止每个绑定仓库的当前任务 runtime，释放本地端口或任务容器
-- 如果某个仓库的 runtime 已经没有运行，只说明现状并继续；不要因为无可停止内容阻断完成
-- `complete` 只停止任务 runtime，不删除任务代码目录，也不删除 Docker 容器
-- 保留 `_docs/<task-id>` 下的任务文档
-- 保留 `_tasks/<task-id>` 下的任务代码，直到显式执行 `cleanup`
-- `已完成` 表示当前阶段任务已完成，不等于这个工作空间永久结束；如果后续还要在同一长期主题下做二期，应进入 `next`
+### 保存、PR、发布与同步
 
-推荐命令：
+- 独立要求“提交到远程 / 推送一下 / 保存代码”按 save-only 处理：不顺带测试、准备依赖、审查、创建 PR、发布或标记完成；同时明确要求验证或审查时执行相应动作。
+- 创建 PR 需明确创建意图；查看状态不授权创建。默认 WIP、实际有 diff 的配套端标题、操作日期及 BBS 关联按 PR 参考执行，不自动提交、合并或关闭 PR。
+- 普通 publish 先对相同目标调用 clean-develop，只处理本地 develop；develop 发布冲突 / 重试现场按发布参考保留并处理，不删除现场。前端成功需明确成功信号或匹配本次执行的成功日志，证据不足为 `UNCERTAIN`，不盲目重发。
+- 独立 sync 的冲突或异常只报告事实，保留现场，不自动修代码或解决冲突。它与发布中的 develop 冲突处理规则不同。
 
-```bash
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/complete_task_workspace.py "YYYY-MM-DD-原始任务名"
-```
+### 审查
 
-### 13. Next
+- 默认完整 Review 同时覆盖通用代码审查、对抗式审查和测试代码收敛，并检查代码质量优化；默认只读，获得修复授权或处于已授权自动开发内循环时才修改。
+- `review --code-only` 不读取 index / plan / progress / decision-log，不复用历史需求判断，仅用 meta 定位仓库和记录分支；结论不代表需求完整性或上线验收。
+- 审查对象固定为 `meta.yaml` 记录的本地任务分支；已提交改动使用三点比较 `origin/<远程主分支>...<本地任务分支>`，工作区改动补充检查。远程同名任务分支只提示落后或分叉，不替代审查对象。
+- 不凭泛泛建议或猜测认定缺陷；基于真实 diff、项目规则和代码路径，区分明确问题、风险与待确认项。输出格式由审查参考统一维护。
 
-用于在同一个任务工作空间内开启下一阶段任务，例如一期上线后继续做二期。
+### Bug 与公示文档
 
-显式命令：
+- Bug 指令的编号始终是 BBS ID，省略时读取当前阶段 `bbs_id`；平台 task ID 和 Bug key 由 AI 查询，不要求用户记忆或提供。
+- `bug` 默认修复、必要验证并回写；`list` / `show` 只查看，`create` 授权提交上下文中明确的问题。验证受阻不提交待验证，不自动关闭 Bug、发布或完成阶段。
+- `doc` 由用户主动调用，仅生成公示并投递，不改任务代码、状态或任务文档；“改动前”按涉及仓库远程 master 的实际功能，不用阶段方案替代。
 
-```text
-/task-workflow next <新任务名>
-/task-workflow next <新任务名> [--bbs-id <编号>] [--repo <repo-key> ...]
-```
+## 运行与验证
 
-执行前必须读取 [stages.md](references/stages.md)。
+- 配置为 `shared-backend-app` 的后端测试在当前任务专属 Docker app 中执行，从任务后端仓库根目录发起，容器内也从仓库根目录运行。Docker 阻断时记录事实，不回退宿主机或其他任务容器。
+- 配置为 `patch-node-frontend-environment` 的前端使用项目 Node 直接运行最小相关验证；仅缺 node_modules 或实际报 native binding 缺失时 prepare。发布前只准备当前平台原生 optional 依赖，不运行完整 runtime prepare。
+- 小程序 / 微信开发者工具前端按项目既有编译、预览或上传流程验证，不因未执行上述前端 prepare 阻断审查。
+- 当前任务 Docker 日志可在 manual 和 auto 下只读取证，容器定位及读取方法见 [verification.md](references/verification.md#当前任务-docker-日志排障)。
+- 真实页面、接口、数据库验证、历史证据复用与失败停止条件按验证参考执行。单测通过、提交推送、测试服发布和业务验收分别陈述，不相互替代。
+- MySQL 数据目录只在用户明确调用 mysql 时切换，不把切库、补字段、导数据或迁移混入普通 runtime 启动。
 
-关键边界：
-- `next` 是在原工作空间内开启新的阶段任务，不新建任务工作空间
-- 用户明确调用 `next` 时，表示先暂停当前阶段并开启下一阶段；不等于确认上一阶段已经完成或已上线
-- 允许从 `方案中` / `开发中` / `测试中` / `暂停中` / `已完成` 开启下一阶段
-- 当前阶段如果已是 `已完成`，历史阶段保留为 `已完成`；否则历史阶段记录为 `暂停中`，并用 `resume_status` 保存原状态
-- 新阶段分支默认基于远程 `master` 最新代码创建，不承接当前本地任务分支
-- `--bbs-id` 是选填；新阶段可以指定新的 `bbs_id`，如果不指定，不默认沿用上一阶段的 `bbs_id`
-- 阶段化和子任务拆分按用户产品口径判断，不按前端/后端/PC/手机端技术面机械拆分
-- 没有子任务时，当前阶段 plan 是当前阶段唯一方案来源；有子任务时，子文档才承接详细方案
-- 开启新阶段后，当前阶段状态为 `方案中`、`coding_allowed: false`；补齐本阶段方案并核对开发授权，任务空间为 auto 且已有授权覆盖时可按准入规则继续，不重复索取开工确认
+## 输出
 
-推荐命令：
+聚焦本轮动作的任务 / 阶段、实际目标、已执行结果、验证或阻塞及下一步；各操作的详细输出要求在对应参考维护。
 
-```bash
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_workspace.py "YYYY-MM-DD-原始任务名" "新任务名"
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_workspace.py "YYYY-MM-DD-原始任务名" "新任务名" --bbs-id 53850
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_workspace.py "YYYY-MM-DD-原始任务名" "新任务名" --repo pf-mproducer-supplier
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_workspace.py "YYYY-MM-DD-原始任务名" "新任务名" --repo 手机前端
-```
-
-### 14. Stage
-
-用于在多阶段任务中切回或切换到某个已记录阶段，例如进入二期后临时回到一期分支处理问题。
-
-显式命令：
-
-```text
-/task-workflow stage <阶段编号或阶段任务名>
-```
-
-执行前必须读取 [stages.md](references/stages.md)。
-
-关键边界：
-- `stage` 是阶段切换，不是新建阶段；新建下一阶段仍使用 `next`
-- 切换阶段必须同步仓库分支、`meta.yaml` 当前阶段、`active_plan` 和 `index.md`，不要只手动 `git checkout`
-- 切换前要求当前仓库工作区干净，且当前分支与 `meta.yaml` 记录分支一致
-- 目标阶段必须已经记录全部绑定仓库分支；缺少任一绑定仓库分支时直接阻断
-- 目标本地分支不存在时直接阻断，不基于远程分支、`master` 或阶段名重建
-- 如果多仓 checkout 中途失败，停止写入 `meta.yaml` 和文档，明确提示已切/未切仓库，让用户确认后再恢复一致状态
-- 切换成功后，原当前阶段会进入 `previous_phases`；未完成的原当前阶段记录为 `暂停中`，并保留 `resume_status`
-- 如果目标阶段记录为 `暂停中`，切入时恢复到 `resume_status`，例如恢复为 `方案中` / `开发中` / `测试中`
-
-推荐命令：
-
-```bash
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_stage.py "YYYY-MM-DD-原始任务名" "1"
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/switch_task_stage.py "YYYY-MM-DD-原始任务名" "一期任务名"
-```
-
-### 15. Cleanup
-
-用于任务已完成，并且需要清理任务代码目录的时候。
-
-规则：
-- 任务状态必须是 `已完成`
-- 每个记录仓库都必须工作区干净，且当前分支与 `meta.yaml` 记录分支一致
-- `cleanup` 不校验 upstream，也不关心远程任务分支是否仍存在；上线后远程任务分支被删除属于正常场景
-- 如果仓库仍有可比较的 upstream，且本地存在未推送提交，阻断 cleanup，避免删除唯一代码副本
-- 删除任务代码前，先清理每个绑定仓库的当前任务 runtime，避免遗留旧端口或已无法使用的任务 `app` 容器
-- 对于 `shared-backend-app`，`cleanup` 只删除当前任务专属的后端 `app` 容器
-- `cleanup` 不得删除共享 Docker 服务、Docker volume、MySQL 数据目录、镜像、任务文档、远程分支或源仓库
-- 如果某个仓库的 runtime 已经没有运行，只说明现状并继续清理
-- 删除 `_tasks/<task-id>`
-- 不删除 `_docs/<task-id>`
-- 如果后续仍可能在同一工作空间上进入 `next`，不要急于 cleanup
-
-推荐命令：
-
-```bash
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/cleanup_task_workspace.py "YYYY-MM-DD-原始任务名"
-```
-
-### 16. Status
-
-用于用户想快速查看任务状态和任务仓库路径。
-
-状态输出应包含：
-- 所有已知任务及当前状态
-- 每个任务绑定的仓库
-- 每个仓库路径和记录分支
-- 仓库路径是否仍然存在
-
-推荐命令：
-
-```bash
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/status_task_workspace.py
-```
-
-### 17. Portal
-
-用于在浏览器里快速查看当前开发中任务对应的手机端、PC 端和后端端口，不再手工记忆任务与端口的映射关系。
-
-常用入口：
-
-1. 静态快照页
-
-```bash
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/render_task_dev_portal.py
-```
-
-默认输出：
-- `/Users/wuyongli/Documents/sg-project/_workspace/task-dev-portal.html`
-
-2. 刷新即最新的本地页
-
-```bash
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/serve_task_dev_portal.py
-```
-
-默认地址：
-- `http://127.0.0.1:8765/`
-
-关键规则：
-- 页面数据来自 `_docs/*/meta.yaml`、前端 `.codex/task-runtime.env`、后端 `docker/.task.env`
-- 手机端地址默认展示为 `http://pfzone.senguo.me:<port>/mproducer/`
-- PC 端地址默认展示为 `http://pfzone.senguo.me:<port>/producer/`
-- 如果你只想手动刷新页面拿到最新状态，用本地页即可；浏览器每次刷新都会重新读取最新任务、分支和端口
-- 如果只需要一个可分享或临时保存的快照页，再使用静态导出脚本
-
-### 18. Doc
-
-用于把当前任务的方案 / 成果整理成正式公示文档，并投递到固定钉钉文件夹给同事查看。
-
-显式命令：
-
-```text
-/task-workflow doc
-/task-workflow doc <任务名>
-```
-
-执行前必须读取 [doc.md](references/doc.md)。
-
-关键边界：
-- 时机由用户主动调用（方案确定后或开发完成后），不随任务自动生成
-- 标题 = 「当前阶段任务名 + 生成当天日期」，如「采购单新增撤销功能2026.10.12」；用户给的名字就是任务名，日期由 AI 自动补
-- 只读任务文档整理成文，不改任务状态 / 代码 / `plan.md` / `progress.md` / `meta.yaml`
-- 所有「改动前」说明以涉及仓库远程 `master`（通常为 `origin/master`）的实际功能为基线；当前阶段或历史阶段方案只能说明改动后与阶段背景，不得拿来替代改动前对比
-- 不接截图管线，只预留截图占位区域，用户事后自己补图
-- 生成失败不阻塞任务，最终以 `dws doc read` 回读为准，不把「开始生成」说成「已生成」
-
-## 文档模型与运行配置
-
-- 本文件用于路由任务和确认关键边界；涉及细节时按场景读取 reference
-- 当需要更新任务文档、拆分方案、处理 `meta.yaml` 或判断文档职责时，读取 [docs-model.md](references/docs-model.md)
-- 当用户表达分阶段、一二期、开启下一阶段或拆产品子任务时，读取 [stages.md](references/stages.md)
-- 当用户表达切回上一阶段、切到某一期、回到历史阶段处理问题时，使用 `switch_task_stage.py`，不要只手动 `git checkout`
-- 当需要发布或同步远程主线时，读取 [publish-sync.md](references/publish-sync.md)
-- 当需要只提交或推送任务代码到远程保存时，按 `Save / Push` 处理，不要套用 Review、PR 或发布验证链路
-- 当需要创建合并请求时，读取 [publish-sync.md](references/publish-sync.md)，先确认当前 `sg pr` 支持所需能力，再使用 `sg pr`，不改用其他 PR 客户端
-- 当需要清理任务仓库的本地 `develop` 分支时，使用 `clean_develop_task_workspace.py`，不要操作远程 `origin/develop`
-- 当需要准备 runtime、解释 `repositories.yaml` / `workspace.yaml` 字段、处理后端测试环境时，读取 [runtime.md](references/runtime.md)
-- 当需要切换本地共享 MySQL 数据目录时，使用 `switch_task_mysql.py`，不要把切库动作混入普通后端启动
-
-## 输出约束
-
-当用户要求创建或继续任务时，回复应聚焦于：
-- 当前识别到的任务
-- 涉及哪些仓库
-- 下一步动作是什么
-
-当用户要求发布时，回复应聚焦于：
-- 按 [publish-sync.md](references/publish-sync.md) 输出任务、目标、仓库、命令、成功信号、失败错误和分支状态
-
-当用户要求同步远程主线时，回复应聚焦于：
-- 按 [publish-sync.md](references/publish-sync.md) 输出任务、目标、仓库、同步动作、成功结果、失败错误或冲突信息
-
-当用户要求创建合并请求时，回复应聚焦于：
-- 当前识别到的任务、目标仓库、`meta.yaml` 记录的源分支和远程默认目标分支
-- 已有 PR 检查、工作区和分支核验结果
-- 是否执行了源分支首次推送，以及 `sg pr create` 的结果、PR 编号和链接
-
-当用户要求保存、提交或推送代码到远程时，回复应聚焦于：
-- 当前识别到的任务和目标仓库
-- 每个仓库的提交 hash、远程分支和 push 结果
-- 推送后的工作区与 upstream 状态
-- 明确说明“本次仅保存代码到远程，未重新运行测试、类型检查或发布”
-- 如果只复用了历史验证记录，说明它只是历史记录，不表述为本轮新执行
-
-当用户要求删除本地 `develop` 分支时，回复应聚焦于：
-- 当前识别到的任务和目标仓库
-- 哪些仓库已删除本地 `develop`
-- 哪些仓库本来就没有本地 `develop`
-- 哪些仓库因为当前正在 `develop` 或 git 错误而失败
-
-当用户要求切换本地 MySQL 时，回复应聚焦于：
-- 目标后端、当前数据目录、目标数据目录
-- 是否 no-op 或已执行 `docker compose up -d --force-recreate mysql`
-- 是否需要重启当前任务后端 app
-
-当用户要求代码审查时，回复应聚焦于：
-- 当前识别到的任务、目标仓库和 review 基线
-- 是否发现并应用项目级 review 规则
-- 默认完整 Review 按 `阻塞问题 / 明确缺陷`、`非阻塞风险`、`代码质量优化`、`测试代码收敛`、`验证建议` 分层输出，并判断是否阻塞上线或进入发布
-- 总览使用纯文字结论和数量，例如“审查结论：存在 1 个阻塞问题、2 个注意项”；不要在总览或层级标题使用状态点
-- 层级标题只写分类名称和数量；红 / 黄 / 绿状态点只用于具体明细，方便直接定位问题、风险和已经验证通过的事实
-- 没有内容的层级直接省略，不输出 `🟢 未发现`；省略输出不等于省略代码质量优化和测试收敛 pass
-- `🟢` 只用于有证据的通过项，不用于表示某个层级为空；`🔴` 用于明确缺陷或阻断，`🟡` 用于非阻塞风险、优化建议、测试收敛建议或未验证项
-- Code Only 在开头标明模式与上下文边界，findings 按严重程度排序并包含文件/行号、问题、影响和建议；结论仅覆盖当前代码改动，不声称需求完整、任务完成或可以上线
-- 未发现阻塞问题不等于没有优化空间；不要把“未发现阻塞问题”简写成“没有问题”
-
-发布场景下的协作约束：
-- 不要把内部脚本实现、通用化改造、命名抽象这类 agent 内部设计过程再次抛给用户确认
-- 如果用户已经明确表达发布意图，应直接按 [publish-sync.md](references/publish-sync.md) 识别任务、匹配目标并执行
-- 只有在发布目标无法匹配、任务上下文不明确、或存在真实执行风险时，才向用户补充提问
-
-同步场景下的协作约束：
-- 不要把“准备怎么 merge、怎么解冲突、要不要顺手修代码”这类后续动作自动串进去
-- 如果同步失败，默认停在“展示失败仓库和错误信息”这一步，等用户确认后再继续处理
-
-创建合并请求场景下的协作约束：
-- 不要把 `sg pr create` 改为 `glab`、`gitlab` 或未知的第三方客户端
-- 没有明确创建授权时，只能用 `sg pr status`、`list` 或 `view` 查询，不创建 PR
-- 不要因为创建 PR 而自动提交、修改现有 PR、合并 PR 或删除分支
-
-审查场景下的协作约束：
-- 不要只输出泛泛建议；必须基于真实 diff、真实项目规则和真实代码路径给结论
-- 不要把大 diff 从头线性扫完当作认真；先收敛到任务相关路径和当前 patch，再决定是否扩散
-- 默认完整 Review 不要因为没有发现阻塞问题就省略测试收敛 pass；测试代码价值判断是默认完整 Review 的固定组成部分
-- 默认完整 Review 不要因为没有发现阻塞问题就省略代码质量优化 pass；只列有明确维护成本、容易误用、低成本可修的优化点，不列纯风格偏好
-- Code Only 不得自动回读任务文档补齐业务上下文，也不得据此判断任务完整性或上线状态；无法从代码确认的业务语义列为待确认
-- 不要把“可能有问题”包装成明确 bug；明确 bug、风险、待确认项要分开
-- 如果用户只要求 review，默认不改代码；如果用户授权修明确问题，仍然只修明确问题
-
-在工作流已经建立后，不要反复解释目录树结构或 Git 基础概念。
+成功、已推送、已发布、已验收等结论分别以相应证据为准；部分失败逐项说明，不把“开始执行”表述成“已完成”。
