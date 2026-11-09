@@ -86,6 +86,38 @@ class TaskPublicationTests(unittest.TestCase):
         self.assertEqual(actual["previous_phases"][0]["publications"], [self.publication])
         self.assertNotIn("publications", actual["current_stage"])
 
+    def test_next_archives_pr_records_without_inheriting_them(self) -> None:
+        records = [{"repo_key": "backend", "source_branch": "一期", "number": 12,
+                    "title": "一期 PR", "url": "https://codeup.example/backend/change/12",
+                    "verified_at": "2026-11-09T10:00:00+08:00"}]
+        self.meta["current_stage"]["pull_requests"] = records
+        self.save()
+        self.next_stage()
+        actual = lib.load_yaml(self.meta_path)
+        self.assertEqual(actual["previous_phases"][0]["pull_requests"], records)
+        self.assertNotIn("pull_requests", actual["current_stage"])
+
+    def test_switch_round_trip_preserves_pr_identity_per_stage_and_repo(self) -> None:
+        self.next_stage()
+        actual = lib.load_yaml(self.meta_path)
+        first = [{"repo_key": "backend", "source_branch": "一期", "number": 12,
+                  "title": "同名 PR", "url": "https://codeup.example/backend/change/12"}]
+        second = [{"repo_key": "backend", "source_branch": "二期", "number": 13,
+                   "title": "同名 PR", "url": "https://codeup.example/backend/change/13"},
+                  {"repo_key": "phone", "source_branch": "二期", "number": 13,
+                   "title": "同名 PR", "url": "https://codeup.example/phone/change/13"}]
+        actual["previous_phases"][0]["pull_requests"] = first
+        actual["current_stage"]["pull_requests"] = second
+        lib.save_yaml(self.meta_path, actual, False)
+        self.switch_stage(1)
+        actual = lib.load_yaml(self.meta_path)
+        self.assertEqual(actual["current_stage"]["pull_requests"], first)
+        self.assertEqual(actual["previous_phases"][0]["pull_requests"], second)
+        self.switch_stage(2)
+        actual = lib.load_yaml(self.meta_path)
+        self.assertEqual(actual["current_stage"]["pull_requests"], second)
+        self.assertEqual(actual["previous_phases"][0]["pull_requests"], first)
+
     def test_switch_round_trip_keeps_each_stages_publications(self) -> None:
         self.next_stage()
         actual = lib.load_yaml(self.meta_path)

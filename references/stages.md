@@ -69,6 +69,7 @@
 - `meta.yaml` 需要更新当前阶段、当前阶段状态、当前任务名、当前记录分支、当前 plan、可选 `bbs_id`，并保留历史阶段链路
 - `next` 归档上一阶段时必须记录该阶段每个绑定仓库的本地分支；后续 `stage` 切换只能依赖这些已记录分支
 - 已有 `current_stage.publications` 随上一阶段归档到对应 `previous_phases[]`；新阶段不继承这些公示记录。记录格式与跨会话接续见 [doc.md](doc.md#阶段记录与跨会话恢复)
+- `pull_requests` 也随所属阶段归档，新阶段不继承旧 PR；字段与复用边界见 [PR 记录](publish-sync.md#pr-记录与复用)。
 - 新阶段的方案讨论过程可写到 `decision-log-<阶段任务名>.md`；当前有效取舍结论写到阶段 plan
 
 推荐命令：
@@ -96,6 +97,7 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_works
 - 如果多仓 checkout 中途失败，停止写入 `meta.yaml` 和文档，明确展示已切和未切仓库，待用户确认后再恢复一致状态
 - 切换成功后，原当前阶段进入 `previous_phases`，目标阶段成为 `current_stage`
 - 切出阶段的 `publications` 随该阶段归档，目标阶段的记录随目标阶段恢复；不得合并到其他阶段或在切换中丢弃
+- 切换时同样保留切出阶段的 `pull_requests`，恢复目标阶段自己的 PR 记录。
 - 切出未完成阶段时，历史阶段记录为 `暂停中`，并用 `resume_status` 保存切出前状态
 - 切入 `暂停中` 阶段时，恢复到 `resume_status`；如果目标本地分支不存在，直接阻断，不重建分支
 - `stage` 保持顶层任务空间 `execution_mode`，不从目标阶段恢复模式。任务空间为 auto 时，切回后先令 `coding_allowed: false`，由 AI 核对目标阶段 plan、既有授权与本轮指令后恢复准入；manual 保留原有状态恢复行为

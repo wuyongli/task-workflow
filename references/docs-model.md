@@ -19,6 +19,7 @@
 - 如果没有先读 `meta.yaml`，就不要声称已经完成任务状态核对、仓库绑定核对或记录分支核对
 - 如果任务已经进入多阶段模式，先用 `meta.yaml` 确认当前阶段、当前阶段状态、当前分支、当前 plan 和可选 `bbs_id`，再用 `index.md` 理解当前阶段与历史阶段的关系
 - 需要查回或接续公示文档时，读取对应阶段的 `publications` 和 `assets/publications/` 下未完成的生成回执；远程核对、继续编辑及补登记按 [doc.md](doc.md#阶段记录与跨会话恢复) 执行，不凭聊天记忆猜链接或重复建文档
+- 需要 PR 标题与链接时，先读对应阶段的 `pull_requests`，缺失或冲突时才按 [PR 记录与复用](publish-sync.md#pr-记录与复用)定向核对。接续外部审查意见时，按 [fix / reply](review-feedback.md)读取 `progress.md` 的逐 PR 处理结果与发送回执；不从历史记录推断本轮仓库审查人分工。
 
 路径查找规则：
 - 如果当前仓库路径匹配 `_tasks/<task-id>/<repo-dir>`，就直接从 `<task-id>` 反查任务
@@ -241,6 +242,7 @@ _docs/<task-id>/
 - 可选顶层 `execution_mode` 为 `manual` / `auto`，缺省按 `manual`；只在任务空间维护一份，不写入 `current_stage` 或 `previous_phases`，`next` / `stage` 均保持该值。模式不替代 `coding_allowed`，开工仍按当前 plan 判断；进度、阻塞和特殊交付限制继续使用现有文档
 - 可选 `bbs_id` 表示当前任务或当前阶段的内部需求反馈编号；同一工作空间进入新阶段后，只有用户提供新的编号时才写入新阶段，没有编号时不要写空字段或占位字段
 - 可选阶段字段 `publications` 保存已回读校验的公示记录列表，字段为 `title`、`node_id`、`url`、`kind` 和带时区的 `generated_at`，完整规则见 [doc.md](doc.md#阶段记录与跨会话恢复)。只在所属的 `current_stage` 或 `previous_phases[]` 保存，不在顶层重复维护，也不把失败尝试当作成功记录
+- 可选阶段字段 `pull_requests` 保存按仓库核对的 PR 编号、完整标题与链接等事实，字段和刷新条件见 [PR 记录与复用](publish-sync.md#pr-记录与复用)。只保存在所属阶段，不维护仓库到审查人的固定关联，也不以缓存状态替代远程当前状态。
 - 只要任务状态、`resume_status`、仓库路径或记录分支发生变化，必须优先更新 `meta.yaml`，再确保 `index.md` 与之对齐
 - 当一次更新同时涉及 `index.md` 与 `meta.yaml` 时，视 `meta.yaml` 为最终机器事实，不要反过来只根据 `index.md` 推断
 - 除非 `meta.yaml` 缺失或损坏，否则恢复上下文时必须先读它，再读其他任务文档

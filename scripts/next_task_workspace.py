@@ -379,8 +379,9 @@ def main() -> int:
         previous_phase["bbs_id"] = previous_bbs_id
     if previous_decision_log_name:
         previous_phase["decision_log"] = previous_decision_log_name
-    if isinstance(current_stage, dict) and "publications" in current_stage:
-        previous_phase["publications"] = current_stage["publications"]
+    for field in ("publications", "pull_requests"):
+        if isinstance(current_stage, dict) and field in current_stage:
+            previous_phase[field] = current_stage[field]
     previous_phases.append(previous_phase)
 
     meta["status"] = "方案中"
