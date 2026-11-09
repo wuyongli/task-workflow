@@ -353,6 +353,8 @@ def main() -> int:
         meta["current_stage"]["bbs_id"] = target_bbs_id
     if target_decision_log:
         meta["current_stage"]["decision_log"] = target_decision_log
+    if "publications" in target_stage:
+        meta["current_stage"]["publications"] = target_stage["publications"]
     meta["previous_phases"] = next_previous_phases
     save_yaml(meta_path, meta, args.dry_run)
 

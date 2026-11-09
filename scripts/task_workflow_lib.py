@@ -1948,7 +1948,12 @@ def validate_repo_state(repo_path: Path, require_remote_sync: bool, expected_bra
     return issues
 
 
-def validate_repo_state_for_cleanup(repo_path: Path, expected_branch: str | None = None) -> list[str]:
+def validate_repo_state_for_cleanup(
+    repo_path: Path,
+    expected_branch: str | None = None,
+    *,
+    discard_local_changes: bool = False,
+) -> list[str]:
     issues: list[str] = []
     if not repo_path.exists():
         issues.append("repo path is missing")
@@ -1959,7 +1964,7 @@ def validate_repo_state_for_cleanup(repo_path: Path, expected_branch: str | None
         return issues
 
     status = run_git(repo_path, "status", "--short")
-    if status:
+    if status and not discard_local_changes:
         issues.append("has uncommitted changes")
 
     branch = run_git(repo_path, "branch", "--show-current")
@@ -1970,18 +1975,25 @@ def validate_repo_state_for_cleanup(repo_path: Path, expected_branch: str | None
     if expected_branch and branch != expected_branch:
         issues.append(f"current branch is {branch}, expected {expected_branch}")
 
-    try:
-        upstream = run_git(repo_path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
-        counts = run_git(repo_path, "rev-list", "--left-right", "--count", f"{upstream}...HEAD")
-    except subprocess.CalledProcessError:
-        # Published task branches are often removed from origin. Cleanup only deletes
-        # the local task checkout, so a missing upstream must not block it.
+    if discard_local_changes:
         return issues
 
-    _behind_str, ahead_str = counts.split()
-    ahead = int(ahead_str)
-    if ahead > 0:
-        issues.append(f"has {ahead} local commit(s) not pushed to {upstream}")
+    # Removing a clone also removes historical stage branches, not just HEAD.
+    local_branches = run_git(repo_path, "for-each-ref", "--format=%(refname:short)\t%(upstream:short)", "refs/heads")
+    for row in local_branches.splitlines():
+        local_branch, _, upstream = row.partition("\t")
+        if not upstream:
+            continue
+        try:
+            counts = run_git(repo_path, "rev-list", "--left-right", "--count", f"{upstream}...{local_branch}")
+        except subprocess.CalledProcessError:
+            # A removed remote task branch must not block cleanup after release.
+            continue
+        _behind_str, ahead_str = counts.split()
+        ahead = int(ahead_str)
+        if ahead > 0:
+            prefix = "" if local_branch == branch else f"branch {local_branch} "
+            issues.append(f"{prefix}has {ahead} local commit(s) not pushed to {upstream}")
 
     return issues
 

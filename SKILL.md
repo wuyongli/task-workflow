@@ -50,7 +50,7 @@ description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的�
 | `complete` | 标记当前阶段完成并停止任务 runtime | [生命周期：Complete](references/lifecycle.md#complete) |
 | `next <新任务名>` | 在原空间开启下一阶段，可带 BBS / repo 参数 | [阶段：next](references/stages.md#next-规则) |
 | `stage <阶段编号或阶段任务名>` | 切回已记录阶段及其分支 | [阶段：stage](references/stages.md#stage-规则) |
-| `cleanup` | 完成后删除任务代码及专属 app，保留文档 | [生命周期：Cleanup](references/lifecycle.md#cleanup) |
+| `cleanup` | 删除已完成或不再开发任务的代码及专属 app，保留文档 | [生命周期：Cleanup](references/lifecycle.md#cleanup) |
 | `status` | 查看任务状态、仓库路径和路径存在性 | [生命周期：Status](references/lifecycle.md#status) |
 | `portal` | 生成静态入口页或启动刷新即最新的本地页 | [运行环境：Portal](references/runtime.md#portal) |
 | `doc [任务名]` | 生成并投递当前阶段公示文档 | [公示文档](references/doc.md) |
@@ -101,13 +101,13 @@ description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的�
 - 发布、同步、PR、清理 develop 和保存共用动态目标识别：从当前任务绑定仓库匹配后端、手机端、PC 端等；无法唯一匹配时才补问，不要求用户重复提供已知路径与分支。
 - 用户一开始明确“一期 / 二期 / 分阶段 / 先做 A 再做 B”时，即从创建起读取阶段参考，按阶段化文档模型处理；不按前端 / 后端等技术面拆产品子任务。
 - `next` 不代表上一阶段已完成；`stage` 必须同步代码分支与任务文档，目标阶段缺分支时阻断，不重建分支。
-- `complete` 只停止 runtime 并保留代码、容器和文档；`cleanup` 才删除任务代码及专属 app，不影响共享资源或任务文档。两者前置条件各按生命周期参考核对。
+- `complete` 只停止 runtime 并保留代码、容器和文档；`cleanup` 可直接清理未完成或暂停的任务，不必先 complete；丢弃本地成果需明确授权。只删除任务代码及专属 app，不影响共享资源或任务文档，细则见生命周期参考。
 
 ### 保存、PR、发布与同步
 
 - 独立要求“提交到远程 / 推送一下 / 保存代码”按 save-only 处理：不顺带测试、准备依赖、审查、创建 PR、发布或标记完成；同时明确要求验证或审查时执行相应动作。
 - 创建 PR 需明确创建意图；查看状态不授权创建。默认 WIP、实际有 diff 的配套端标题、操作日期及 BBS 关联按 PR 参考执行，不自动提交、合并或关闭 PR。
-- 普通 publish 先对相同目标调用 clean-develop，只处理本地 develop；develop 发布冲突 / 重试现场按发布参考保留并处理，不删除现场。前端成功需明确成功信号或匹配本次执行的成功日志，证据不足为 `UNCERTAIN`，不盲目重发。
+- 普通 publish 先对相同目标调用 clean-develop，只处理本地 develop；develop 发布冲突 / 重试现场按发布参考保留并处理，不删除现场。前端成功需明确成功信号或匹配本次执行的成功日志，证据不足为 `UNCERTAIN`，不盲目重发。测试服发布成功后，按发布参考逐项流转已交测的 Bug，回读确认待验证后通过 DWS 钉钉单聊通知对应测试人员。
 - 独立 sync 的冲突或异常只报告事实，保留现场，不自动修代码或解决冲突。它与发布中的 develop 冲突处理规则不同。
 
 ### 审查
@@ -120,8 +120,8 @@ description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的�
 ### Bug 与公示文档
 
 - Bug 指令的编号始终是 BBS ID，省略时读取当前阶段 `bbs_id`；平台 task ID 和 Bug key 由 AI 查询，不要求用户记忆或提供。
-- `bug` 默认修复、必要验证并回写；`list` / `show` 只查看，`create` 授权提交上下文中明确的问题。验证受阻不提交待验证，不自动关闭 Bug、发布或完成阶段。
-- `doc` 由用户主动调用，仅生成公示并投递，不改任务代码、状态或任务文档；“改动前”按涉及仓库远程 master 的实际功能，不用阶段方案替代。
+- `bug` 默认修复、必要验证并回写。修复验证通过后记录待发布，供多个 Bug 和优化集中发布。确认测试服已包含该 Bug 的完整修复后，按平台权限转为 `pending_verify`（待验证）并回读确认。`list` / `show` 只查看，`create` 提交上下文中明确的问题。关闭 Bug、发布或完成阶段仍按各自指令执行。
+- `doc` 由用户主动调用，生成并校验后只将公示记录写入对应阶段的 `publications`；不改任务代码、状态、开发许可或方案。“改动前”按涉及仓库远程 master 的实际功能，不用阶段方案替代；跨会话查回和继续编辑见公示参考。
 
 ## 运行与验证
 

@@ -80,18 +80,20 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/complete_task_w
 
 ## Cleanup
 
-用于任务已完成，并且需要清理任务代码目录的时候。
+用于任务已完成，或用户决定不再继续开发，需要清理任务代码目录的时候。
 
 规则：
-- 任务状态必须是 `已完成`
-- 每个记录仓库都必须工作区干净，且当前分支与 `meta.yaml` 记录分支一致
-- `cleanup` 不校验 upstream，也不关心远程任务分支是否仍存在；上线后远程任务分支被删除属于正常场景
-- 如果仓库仍有可比较的 upstream，且本地存在未推送提交，阻断 cleanup，避免删除唯一代码副本
+- 允许从 `方案中` / `开发中` / `测试中` / `暂停中` / `已完成` 直接执行；不恢复暂停状态、不调用 `complete`，也不把放弃开发写成已完成。仓库预检通过后，未完成任务及当前阶段转为 `暂停中`，用 `resume_status` 保留原状态并置 `coding_allowed: false`，同步 index，避免自动调度继续派发。原本暂停的任务保留恢复状态，已完成任务保持已完成；不改变执行模式或历史阶段状态。
+- 默认每个记录仓库都必须工作区干净，且当前分支与 `meta.yaml` 记录分支一致。
+- `cleanup` 不要求 upstream 或远程任务分支仍然存在；上线后远程任务分支被删除属于正常场景。
+- 默认检查 clone 内所有本地分支（包括历史阶段分支）；分支仍有可比较的 upstream，且本地存在未推送提交时，阻断 cleanup，避免删除唯一代码副本。没有 upstream 或远程分支已删除时延续既有规则，不以此阻断；这不代表已证实全部代码推送。
+- 用户明确“放弃这个任务并清理 / 本地改动也不要了”等丢弃意图时，可直接使用 `--discard-local-changes`，允许删除未提交、未跟踪、被忽略的文件及未推送提交，无需先提交或推送，也不重复确认既有授权。只有一般“cleanup / 清理”且发现受保护改动时，列出受影响仓库并确认是否丢弃；未完成或暂停本身不构成再次确认的理由。
+- `--discard-local-changes` 仅放宽本地成果保护，不放宽任务路径、仓库存在性和记录分支校验。所有仓库预检通过后才开始清理 runtime 和代码；预检失败保留现场，不 reset、切分支或伪造状态绕过。
 - 删除任务代码前，先清理每个绑定仓库的当前任务 runtime，避免遗留旧端口或已无法使用的任务 `app` 容器
 - 对于 `shared-backend-app`，`cleanup` 只删除当前任务专属的后端 `app` 容器
 - `cleanup` 不得删除共享 Docker 服务、Docker volume、MySQL 数据目录、镜像、任务文档、远程分支或源仓库
 - 如果某个仓库的 runtime 已经没有运行，只说明现状并继续清理
-- 删除 `_tasks/<task-id>`
+- 删除整个 `_tasks/<task-id>`，包括该任务各阶段在本地 clone 中的全部分支和文件；不是只删除当前阶段。涉及历史阶段仍需保留的本地成果时，先保留所需成果，或取得覆盖这些成果的明确丢弃授权。
 - 不删除 `_docs/<task-id>`
 - 如果后续仍可能在同一工作空间上进入 `next`，不要急于 cleanup
 
@@ -100,6 +102,14 @@ python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/complete_task_w
 ```bash
 python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/cleanup_task_workspace.py "YYYY-MM-DD-原始任务名"
 ```
+
+明确放弃本地成果时：
+
+```bash
+python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/cleanup_task_workspace.py "YYYY-MM-DD-原始任务名" --discard-local-changes
+```
+
+添加 `--dry-run` 仅预览检查及清理动作，不删除文件或容器。输出应说明实际清理范围、是否丢弃本地成果和文档保留位置；清理成功不代表任务完成或验收通过。放弃任务的原因及清理结果可按真实情况记入 `progress.md`；恢复上下文时应先说明代码已清理，不自动重建或继续开发。
 
 ## Status
 
