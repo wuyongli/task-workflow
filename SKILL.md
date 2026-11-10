@@ -41,7 +41,7 @@ description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的�
 | `mode auto` / `mode manual` | 切换当前任务空间执行模式 | [自动模式](references/auto-mode.md) |
 | `publish [目标...]` | 发布指定仓库到测试服 | [发布：Publish](references/publish-sync.md#publish) |
 | `sync [目标...]` | 同步各仓库远程主线 | [发布：Sync](references/publish-sync.md#sync) |
-| `pr [目标...]` | 创建 PR；标题、描述、reviewer、BBS 链接和 WIP 参数见参考 | [发布：PR](references/publish-sync.md#pr) |
+| `pr [目标...]` | 自动提交、推送选中仓库的本任务改动，再创建或复用 PR；参数见参考 | [发布：PR](references/publish-sync.md#pr) |
 | 保存 / 提交 / 推送到远程 | 只保存当前任务改动 | [Save / Push](references/publish-sync.md#save--push)、[保存边界](references/verification.md#save-only-边界) |
 | `clean-develop [目标...]` | 删除指定仓库的本地 develop | [Clean Develop](references/publish-sync.md#clean-develop) |
 | `mysql <目标后端>` | 显式切换本地共享 MySQL 数据目录 | [运行环境：MySQL](references/runtime.md#mysql) |
@@ -108,7 +108,7 @@ description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的�
 ### 保存、PR、发布与同步
 
 - 独立要求“提交到远程 / 推送一下 / 保存代码”按 save-only 处理：不顺带测试、准备依赖、审查、创建 PR、发布或标记完成；同时明确要求验证或审查时执行相应动作。
-- 创建 PR 需明确创建意图；查看状态不授权创建。默认 WIP、实际有 diff 的配套端标题、操作日期及 BBS 关联按 PR 参考执行，不自动提交、合并或关闭 PR。
+- 明确创建 PR 即包含选中仓库本任务改动的必要验证、提交与普通推送授权，不因尚未 commit 重复询问；查看状态仍只读。默认 WIP、配套端标题、日期和 BBS 关联按 PR 参考执行，不自动合并或关闭 PR；无关改动和失败边界按参考处理。
 - 普通 publish 先对相同目标调用 clean-develop，只处理本地 develop；develop 发布冲突 / 重试现场按发布参考保留并处理，不删除现场。前端成功需明确成功信号或匹配本次执行的成功日志，证据不足为 `UNCERTAIN`，不盲目重发。测试服发布成功后，按发布参考逐项流转已交测的 Bug，回读确认待验证后通过 DWS 钉钉单聊通知对应测试人员。
 - 独立 sync 的冲突或异常只报告事实，保留现场，不自动修代码或解决冲突。它与发布中的 develop 冲突处理规则不同。
 
