@@ -22,7 +22,7 @@ description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的�
 
 - 任务优先按当前 `_tasks/<task-id>/...` 路径绑定，分支名只用于一致性校验。
 - `meta.yaml` 是状态、仓库、记录分支、当前阶段、当前主计划和可选 `bbs_id` 的机器事实入口；`index.md` 只展示摘要。
-- 普通恢复先读 `meta.yaml`，再读 `index.md`，按需读取当前 plan、`progress.md` 和 `decision-log.md`。恢复顺序及摘要不一致时的处理见 [docs-model.md](references/docs-model.md#load)。
+- 恢复任务上下文时按 [Load](references/docs-model.md#load) 读取 `meta.yaml`、`index.md` 和所需材料。单独执行操作指令时，按该指令的章节确定读取范围。
 - Code Only 例外：仅用 meta 定位仓库和分支，不读取任务方案或进度；执行方式见下方 Review 规则。
 - 同一工作空间可承载多个阶段，任一时刻只有一个当前阶段。顶层状态表示当前阶段状态，历史状态保存在 `previous_phases`。
 - `plan.md` / 当前阶段 plan 保存当前有效方案与决策原因；`progress.md` 保存执行、验证和阻塞；`decision-log.md` 保存讨论与取舍过程。详细职责见 [docs-model.md](references/docs-model.md)。
@@ -30,7 +30,9 @@ description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的�
 
 ## 指令导航
 
-显式指令以 `/task-workflow` 开头，也接受表中列出的自然语言意图。链接锚点用于定位操作，执行前同时读取对应参考的共用规则、输出要求及适用的文档同步规则；涉及验证时追加读取 [verification.md](references/verification.md)，需要准备运行环境时读取 [runtime.md](references/runtime.md)。
+显式指令以 `/task-workflow` 开头，也接受表中列出的自然语言意图。先读表中链接的对应章节，再按本轮操作读取适用的共用、输出与文档同步规则。涉及验证或运行环境时，分别读取 [验证规则](references/verification.md) 或 [运行环境](references/runtime.md) 的相关章节。
+
+满足指令前置条件时，按参考命令调用现有脚本，由脚本完成其已有检查。参数不明时看 `--help`，出现异常或需要修改脚本时再读相关源码。一次调用包含多个动作时，各自按所需范围取证。
 
 | 指令 / 意图 | 用途 | 执行前必读 |
 | --- | --- | --- |

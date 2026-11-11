@@ -47,11 +47,23 @@
 /task-workflow next <新任务名> [--bbs-id <编号>] [--repo <repo-key或自然目标名称> ...]
 ```
 
+1. 读取任务 `meta.yaml`，确定 task id、当前阶段和绑定仓库。同批核对所选仓库的本地分支是否已占用新阶段分支名。分支名因任务名称含空格等字符而不明确时，用脚本的 `--dry-run` 确认实际名称。遇到重名先报告，保留已有分支。通过后按用户给出的任务名、仓库及 BBS 参数运行脚本，由脚本完成仓库状态检查和阶段文档同步。
+
+```bash
+python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_workspace.py "YYYY-MM-DD-原始任务名" "新任务名"
+python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_workspace.py "YYYY-MM-DD-原始任务名" "新任务名" --bbs-id 53850
+python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_workspace.py "YYYY-MM-DD-原始任务名" "新任务名" --repo pf-mproducer-supplier
+python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_workspace.py "YYYY-MM-DD-原始任务名" "新任务名" --repo 手机前端
+```
+
+2. 脚本成功后，在同一批回读 `meta.yaml` 的新阶段状态、记录分支、计划入口，并核对所选仓库实际分支和计划文件是否存在。汇报新阶段和计划入口。
+3. 脚本失败时，同批回读所有所选仓库的实际分支，以及 `meta.yaml` 的当前阶段、记录分支和计划入口，核对新阶段计划是否已写入。逐仓报告已切换和未切换的结果，并说明阶段文档写入情况及分支与记录不一致的位置。
+
 - `next` 不是“继续原任务”，而是在原工作空间内开启一个新的阶段任务
 - 用户明确调用 `next` 时，表示先暂停当前阶段并开启下一阶段；不等于确认上一阶段已经完成或已上线
 - `next` 允许从 `方案中` / `开发中` / `测试中` / `暂停中` / `已完成` 进入下一阶段
 - 如果当前阶段已是 `已完成`，历史阶段保留为 `已完成`；否则历史阶段记录为 `暂停中`，并用 `resume_status` 保存原状态
-- 默认要求当前记录仓库工作区干净，避免把上一阶段的未收敛状态带入下一阶段
+- 所选仓库须在记录分支且工作区干净，避免把上一阶段的未收敛状态带入下一阶段
 - 不要求上一阶段本地分支仍保留 upstream；任务上线后原远程任务分支已删除属于正常场景
 - 默认复用原 task id、原 `_tasks/<task-id>` 代码目录、原 `_docs/<task-id>` 文档目录；不要因为开启下一阶段就新建任务工作空间
 - 新阶段分支默认基于远程 `master` 最新代码创建，不承接当前本地任务分支
@@ -59,8 +71,7 @@
 - 如果本阶段只涉及当前任务绑定仓库中的部分仓库，允许只切这些仓库到新阶段分支；未选中的仓库继续保留原分支
 - `next --repo` 同时支持 repo key 和自然目标名称，例如 `pf-mproducer-supplier`、`手机前端`、`PC前端`、`后端`
 - 新阶段 plan 文件名优先使用新任务名、分支语义或当前任务描述，不使用 `plan-phase-2.md` 这类抽象命名
-- 开启新阶段后，当前阶段状态为 `方案中`、`coding_allowed: false`；补齐本阶段方案并核对开发授权，任务空间为 auto 且已有授权覆盖时可按准入规则继续，不重复索取开工确认
-- `next` 保持顶层任务空间 `execution_mode`，不把模式写入历史或当前阶段。新阶段仍从 `方案中`、`coding_allowed: false` 开始，按新 plan 核对目标、范围、验收和既有授权，不沿用旧阶段方案作为准入依据
+- 新阶段从 `方案中`、`coding_allowed: false` 开始，沿用顶层 `execution_mode`。继续开发时以新阶段方案判断准入，auto 模式下复用仍覆盖本轮范围的既有授权。
 
 ## 文档同步
 
@@ -71,15 +82,6 @@
 - 已有 `current_stage.publications` 随上一阶段归档到对应 `previous_phases[]`；新阶段不继承这些公示记录。记录格式与跨会话接续见 [doc.md](doc.md#阶段记录与跨会话恢复)
 - `pull_requests` 也随所属阶段归档，新阶段不继承旧 PR；字段与复用边界见 [PR 记录](publish-sync.md#pr-记录与复用)。
 - 新阶段的方案讨论过程可写到 `decision-log-<阶段任务名>.md`；当前有效取舍结论写到阶段 plan
-
-推荐命令：
-
-```bash
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_workspace.py "YYYY-MM-DD-原始任务名" "新任务名"
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_workspace.py "YYYY-MM-DD-原始任务名" "新任务名" --bbs-id 53850
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_workspace.py "YYYY-MM-DD-原始任务名" "新任务名" --repo pf-mproducer-supplier
-python3 /Users/wuyongli/Documents/sg-skill/task-workflow/scripts/next_task_workspace.py "YYYY-MM-DD-原始任务名" "新任务名" --repo 手机前端
-```
 
 ## `stage` 规则
 
