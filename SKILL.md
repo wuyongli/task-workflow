@@ -1,6 +1,6 @@
 ---
 name: task-workflow
-description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的多仓任务创建、恢复、自动开发模式、BBS 关联 Bug 处理、代码审查、钉钉审查意见处理与回复、提交推送、PR、发布、同步、阶段切换或生成公示文档时使用。"
+description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的多仓任务创建、恢复、自动开发模式、BBS 关联 Bug 处理、代码审查、钉钉审查意见复核修复与回复、提交推送、PR、发布、同步、阶段切换或生成公示文档时使用。"
 ---
 
 # 任务工作流
@@ -49,8 +49,7 @@ description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的�
 | `mysql <目标后端>` | 显式切换本地共享 MySQL 数据目录 | [运行环境：MySQL](references/runtime.md#mysql) |
 | `review [目标...]` / `codeview [目标...]` | 默认完整 Review | [审查](references/review.md) |
 | `review --code-only [目标...]` | 隔离任务文档，只按代码证据审查 | [审查：模式选择](references/review.md#模式选择) |
-| `fix <姓名> [目标...] [最近N条]` | 读取该人的 PR 意见、复核、修复明确问题并推送；默认最近 10 条单聊消息 | [外部审查意见](references/review-feedback.md) |
-| `reply [姓名] [目标...]` | 将现有处理结果按每个 PR 单独钉钉回复 | [外部审查意见](references/review-feedback.md#reply回复结果) |
+| `fix <姓名> [目标...] [最近N条]` | 读取该人的 PR 意见、复核、修复明确问题、推送并按每个 PR 单独钉钉回复；默认最近 10 条单聊消息 | [外部审查意见](references/review-feedback.md) |
 | `complete` | 标记当前阶段完成并停止任务 runtime | [生命周期：Complete](references/lifecycle.md#complete) |
 | `next <新任务名>` | 在原空间开启下一阶段，可带 BBS / repo 参数 | [阶段：next](references/stages.md#next-规则) |
 | `stage <阶段编号或阶段任务名>` | 切回已记录阶段及其分支 | [阶段：stage](references/stages.md#stage-规则) |
@@ -119,7 +118,7 @@ description: "当处理 /Users/wuyongli/Documents/sg-project/_workspace 下的�
 - 默认完整 Review 同时覆盖通用代码审查、对抗式审查和测试代码收敛，并检查代码质量优化；默认只读，获得修复授权或处于已授权自动开发内循环时才修改。
 - `review --code-only` 不读取 index / plan / progress / decision-log，不复用历史需求判断，仅用 meta 定位仓库和记录分支；结论不代表需求完整性或上线验收。
 - 审查对象固定为 `meta.yaml` 记录的本地任务分支；已提交改动使用三点比较 `origin/<远程主分支>...<本地任务分支>`，工作区改动补充检查。远程同名任务分支只提示落后或分叉，不替代审查对象。
-- `fix` 是独立的外部审查意见处理指令，包含当前范围内明确问题的修复、验证和普通推送，不自动发消息；`reply` 才发送现有结果，每个收件人、每个 PR 一条消息。姓名与目标仅约束本轮，不保存仓库审查人配置。PR 标题与链接按[阶段 PR 记录](references/publish-sync.md#pr-记录与复用)优先复用。
+- `fix` 是独立的外部审查意见处理指令，包含当前范围内明确问题的修复、验证、普通推送，以及按每个收件人、每个 PR 一条消息的钉钉回复；一次调用完成全流程。本轮明确“先不发消息 / 只复核 / 不改代码 / 不推送”时按限制执行。姓名与目标仅约束本轮，不保存仓库审查人配置。PR 标题与链接按[阶段 PR 记录](references/publish-sync.md#pr-记录与复用)优先复用。
 - 不凭泛泛建议或猜测认定缺陷；基于真实 diff、项目规则和代码路径，区分明确问题、风险与待确认项。输出格式由审查参考统一维护。
 
 ### Bug 与公示文档

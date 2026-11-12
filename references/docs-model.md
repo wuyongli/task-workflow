@@ -19,7 +19,7 @@
 - 如果没有先读 `meta.yaml`，就不要声称已经完成任务状态核对、仓库绑定核对或记录分支核对
 - 如果任务已经进入多阶段模式，先用 `meta.yaml` 确认当前阶段、当前阶段状态、当前分支、当前 plan 和可选 `bbs_id`，再用 `index.md` 理解当前阶段与历史阶段的关系
 - 需要查回或接续公示文档时，读取对应阶段的 `publications` 和 `assets/publications/` 下未完成的生成回执；远程核对、继续编辑及补登记按 [doc.md](doc.md#阶段记录与跨会话恢复) 执行，不凭聊天记忆猜链接或重复建文档
-- 需要 PR 标题与链接时，先读对应阶段的 `pull_requests`，缺失或冲突时才按 [PR 记录与复用](publish-sync.md#pr-记录与复用)定向核对。接续外部审查意见时，按 [fix / reply](review-feedback.md)读取 `progress.md` 的逐 PR 处理结果与发送回执；不从历史记录推断本轮仓库审查人分工。
+- 需要 PR 标题与链接时，先读对应阶段的 `pull_requests`，缺失或冲突时才按 [PR 记录与复用](publish-sync.md#pr-记录与复用)定向核对。接续外部审查意见时，按 [fix](review-feedback.md)读取 `progress.md` 的逐 PR 处理结果与发送回执；不从历史记录推断本轮仓库审查人分工。
 
 路径查找规则：
 - 如果当前仓库路径匹配 `_tasks/<task-id>/<repo-dir>`，就直接从 `<task-id>` 反查任务
