@@ -12,7 +12,7 @@ from task_workflow_lib import (
     load_yaml,
     read_current_branch,
     resolve_repo_path,
-    resolve_requested_repo_keys,
+    resolve_requested_repo_keys_or_aliases_with_failures,
 )
 
 
@@ -92,7 +92,11 @@ def run_clean_develop_job(job: dict[str, object]) -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Delete local develop branch for selected task repos.")
     parser.add_argument("task_id", help="Task id such as 2026-06-03-部门转货")
-    parser.add_argument("targets", nargs="*", help="Optional targets such as 后端 / 前端 / 手机前端 / PC前端")
+    parser.add_argument(
+        "targets",
+        nargs="*",
+        help="Optional targets such as repo key / 后端 / 前端 / 手机前端 / PC前端",
+    )
     parser.add_argument("--config-root", type=Path, default=DEFAULT_CONFIG_ROOT)
     args = parser.parse_args()
 
@@ -120,21 +124,45 @@ def main() -> int:
         if isinstance(row, dict) and row.get("key")
     }
     bound_repo_keys = list(repo_meta_by_key.keys())
-    selected_repo_keys = resolve_requested_repo_keys(args.targets, bound_repo_keys, repo_cfg_by_key)
+    selected_repo_keys, target_failures = resolve_requested_repo_keys_or_aliases_with_failures(
+        args.targets, bound_repo_keys, repo_cfg_by_key
+    )
+
+    for failure in target_failures:
+        print(f"[FAIL] {failure['target']}: {failure['reason']}")
 
     jobs: list[dict[str, object]] = []
+    preflight_failures: list[dict[str, str]] = []
     for repo_key in selected_repo_keys:
         repo_meta = repo_meta_by_key.get(repo_key)
         if repo_meta is None:
-            raise ValueError(f"repo {repo_key} is not bound to task {args.task_id}")
+            preflight_failures.append(
+                {"repo_key": repo_key, "reason": f"repo {repo_key} is not bound to task {args.task_id}"}
+            )
+            continue
 
-        repo_path = resolve_repo_path(tasks_root, args.task_id, repo_meta)
+        try:
+            repo_path = resolve_repo_path(tasks_root, args.task_id, repo_meta)
+        except ValueError as exc:
+            preflight_failures.append(
+                {"repo_key": repo_key, "reason": f"repo {repo_key} path metadata is invalid: {exc}"}
+            )
+            continue
         print(f"[PLAN] {repo_key}")
         print(f"  path: {repo_path}")
         print("  action: delete local develop branch if it exists")
         jobs.append({"repo_key": repo_key, "repo_path": repo_path})
 
+    for failure in preflight_failures:
+        print(f"[FAIL] {failure['repo_key']}: {failure['reason']}")
+
     if not jobs:
+        if target_failures or preflight_failures:
+            print(
+                f"[SUMMARY] target_failed={len(target_failures)} "
+                f"preflight_failed={len(preflight_failures)}"
+            )
+            return 1
         print("no clean-develop jobs resolved")
         return 0
 
@@ -143,7 +171,17 @@ def main() -> int:
     with ThreadPoolExecutor(max_workers=len(jobs)) as executor:
         future_map = {executor.submit(run_clean_develop_job, job): job for job in jobs}
         for future in as_completed(future_map):
-            result = future.result()
+            job = future_map[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                result = {
+                    "repo_key": job["repo_key"],
+                    "status": "failed",
+                    "reason": f"clean develop job crashed: {exc}",
+                    "stdout": "",
+                    "stderr": "",
+                }
             repo_key = str(result["repo_key"])
             status = str(result["status"])
             reason = str(result["reason"])
@@ -166,8 +204,11 @@ def main() -> int:
     failed = [item for item in results if str(item["status"]) == "failed"]
     skipped = [item for item in results if str(item["status"]) == "skipped"]
     success = len(results) - len(failed) - len(skipped)
-    print(f"[SUMMARY] success={success} skipped={len(skipped)} failed={len(failed)}")
-    return 1 if failed else 0
+    print(
+        f"[SUMMARY] success={success} skipped={len(skipped)} failed={len(failed)} "
+        f"target_failed={len(target_failures)} preflight_failed={len(preflight_failures)}"
+    )
+    return 1 if failed or target_failures or preflight_failures else 0
 
 
 if __name__ == "__main__":

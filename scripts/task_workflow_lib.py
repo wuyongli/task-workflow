@@ -357,6 +357,61 @@ def resolve_requested_repo_keys_or_aliases(
     return resolved
 
 
+def resolve_requested_repo_keys_or_aliases_with_failures(
+    raw_targets: list[str],
+    bound_repo_keys: list[str],
+    repo_cfg_by_key: dict[str, dict[str, Any]],
+) -> tuple[list[str], list[dict[str, str]]]:
+    if not raw_targets:
+        return list(bound_repo_keys), []
+
+    resolved: list[str] = []
+    failures: list[dict[str, str]] = []
+    seen: set[str] = set()
+    bound_repo_key_set = set(bound_repo_keys)
+    alias_targets: list[tuple[str, str]] = []
+
+    for raw_target in raw_targets:
+        normalized = raw_target.strip()
+        if normalized in bound_repo_key_set:
+            if normalized not in seen:
+                seen.add(normalized)
+                resolved.append(normalized)
+            continue
+        try:
+            repo_key = resolve_repo_alias_key(raw_target, bound_repo_keys, repo_cfg_by_key)
+        except ValueError as exc:
+            failures.append({"target": raw_target, "reason": str(exc)})
+            continue
+        if repo_key is not None:
+            if repo_key not in seen:
+                seen.add(repo_key)
+                resolved.append(repo_key)
+            continue
+        try:
+            target_kind = resolve_publish_target_kind(raw_target)
+        except ValueError as exc:
+            failures.append({"target": raw_target, "reason": str(exc)})
+            continue
+        alias_targets.append((raw_target, target_kind))
+
+    raw_targets_by_kind: dict[str, list[str]] = {}
+    for raw_target, target_kind in alias_targets:
+        raw_targets_by_kind.setdefault(target_kind, []).append(raw_target)
+    target_kinds = normalize_requested_target_kinds([target_kind for _, target_kind in alias_targets])
+    for target_kind in target_kinds:
+        try:
+            repo_key = resolve_task_publish_repo_key(target_kind, bound_repo_keys, repo_cfg_by_key)
+        except ValueError as exc:
+            for raw_target in raw_targets_by_kind[target_kind]:
+                failures.append({"target": raw_target, "reason": str(exc)})
+            continue
+        if repo_key not in seen:
+            seen.add(repo_key)
+            resolved.append(repo_key)
+    return resolved, failures
+
+
 def classify_repo_publish_kind(repo_cfg: dict[str, Any]) -> str | None:
     repo_key = str(repo_cfg.get("key") or "")
     repo_path = str(repo_cfg.get("path") or "")

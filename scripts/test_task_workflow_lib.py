@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import socket
+import sys
 import subprocess
 import tempfile
 import threading
@@ -1277,6 +1280,94 @@ class StopTaskRuntimeTests(unittest.TestCase):
 
 
 class PublishTargetTests(unittest.TestCase):
+    def _run_publish_job(
+        self,
+        command: list[str],
+        *,
+        stdout: str = "",
+        returncode: int = 0,
+        log_entry: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            with (
+                mock.patch.object(
+                    publish_script.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess(
+                        args=command,
+                        returncode=returncode,
+                        stdout=stdout,
+                        stderr="",
+                    ),
+                ),
+                mock.patch.object(publish_script, "find_publish_cli_log_entry", return_value=log_entry),
+            ):
+                return publish_script.run_publish_job(
+                    {
+                        "repo_key": "demo-repo",
+                        "repo_path": repo_path,
+                        "command": command,
+                    }
+                )
+
+    def _run_publish_main(
+        self,
+        tmp: Path,
+        *,
+        targets: list[str],
+        task_meta: dict[str, object],
+        repositories_cfg: dict[str, object],
+        run_publish_job,
+        resolve_repo_path=None,
+        classify_repo_publish_kind=None,
+        resolve_node_version_for_repo=None,
+        read_current_branch=None,
+    ) -> tuple[int, str]:
+        resolve_repo_path = resolve_repo_path or (lambda _root, _task_id, _repo_meta: tmp)
+        classify_repo_publish_kind = classify_repo_publish_kind or (lambda _repo_cfg: "pc_frontend")
+        resolve_node_version_for_repo = resolve_node_version_for_repo or (lambda _repo_path: None)
+        read_current_branch = read_current_branch or (lambda _repo_path: "main")
+        with (
+            mock.patch.object(sys, "argv", ["publish_task_workspace.py", "2026-11-13-demo", *targets]),
+            mock.patch.object(
+                publish_script,
+                "load_yaml",
+                side_effect=[
+                    {"docs_root": str(tmp / "docs"), "tasks_root": str(tmp / "tasks")},
+                    repositories_cfg,
+                ],
+            ),
+            mock.patch.object(
+                publish_script,
+                "load_task_meta",
+                return_value=(tmp / "meta.yaml", task_meta),
+            ),
+            mock.patch.object(publish_script, "resolve_repo_path", side_effect=resolve_repo_path),
+            mock.patch.object(publish_script, "read_current_branch", side_effect=read_current_branch),
+            mock.patch.object(publish_script, "read_git_text", return_value=""),
+            mock.patch.object(
+                publish_script,
+                "resolve_publish_command",
+                return_value=["sg", "publish", "local"],
+            ),
+            mock.patch.object(
+                publish_script,
+                "classify_repo_publish_kind",
+                side_effect=classify_repo_publish_kind,
+            ),
+            mock.patch.object(
+                publish_script,
+                "resolve_node_version_for_repo",
+                side_effect=resolve_node_version_for_repo,
+            ),
+            mock.patch.object(publish_script, "should_prepare_frontend_publish_runtime", return_value=False),
+            mock.patch.object(publish_script, "run_publish_job", side_effect=run_publish_job),
+            contextlib.redirect_stdout(io.StringIO()) as out,
+        ):
+            returncode = publish_script.main()
+        return returncode, out.getvalue()
+
     def test_resolve_publish_target_kind_supports_human_targets(self) -> None:
         self.assertEqual(lib.resolve_publish_target_kind("后端"), "backend")
         self.assertEqual(lib.resolve_publish_target_kind("前端"), "frontend")
@@ -1482,6 +1573,62 @@ class PublishTargetTests(unittest.TestCase):
             lib.resolve_requested_repo_keys_or_aliases(["批发手机前端"], bound_repo_keys, repo_cfg_by_key),
             ["senguo-pf-easy-mobile"],
         )
+
+    def test_resolve_requested_repo_keys_or_aliases_supports_repo_key(self) -> None:
+        repo_cfg_by_key = {
+            "producer-backend": {
+                "key": "producer-backend",
+                "aliases": ["产地后端"],
+                "notes": "产地后端",
+            },
+        }
+        bound_repo_keys = ["producer-backend"]
+
+        self.assertEqual(
+            lib.resolve_requested_repo_keys_or_aliases(["producer-backend"], bound_repo_keys, repo_cfg_by_key),
+            ["producer-backend"],
+        )
+
+    def test_resolve_requested_repo_keys_with_failures_keeps_valid_targets(self) -> None:
+        repo_cfg_by_key = {
+            "producer-backend": {
+                "key": "producer-backend",
+                "aliases": ["产地后端"],
+                "notes": "产地后端",
+            },
+        }
+        bound_repo_keys = ["producer-backend"]
+
+        keys, failures = lib.resolve_requested_repo_keys_or_aliases_with_failures(
+            ["ghost", "producer-backend"], bound_repo_keys, repo_cfg_by_key
+        )
+
+        self.assertEqual(keys, ["producer-backend"])
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0]["target"], "ghost")
+        self.assertIn("unknown publish target", failures[0]["reason"])
+
+    def test_resolve_requested_repo_keys_with_failures_merges_generic_frontend(self) -> None:
+        repo_cfg_by_key = {
+            "pf-mproducer-supplier": {
+                "key": "pf-mproducer-supplier",
+                "notes": "手机前端",
+                "runtime": {"mode": "patch-node-frontend-environment"},
+            },
+            "producer-pc": {
+                "key": "producer-pc",
+                "notes": "PC前端",
+                "runtime": {"mode": "patch-node-frontend-environment"},
+            },
+        }
+        bound_repo_keys = ["pf-mproducer-supplier", "producer-pc"]
+
+        keys, failures = lib.resolve_requested_repo_keys_or_aliases_with_failures(
+            ["前端", "手机前端", "PC前端"], bound_repo_keys, repo_cfg_by_key
+        )
+
+        self.assertEqual(keys, ["pf-mproducer-supplier", "producer-pc"])
+        self.assertEqual(failures, [])
 
     def test_build_pr_default_title_marks_backend_pr_with_mobile_platform(self) -> None:
         task_meta = {
@@ -2074,47 +2221,81 @@ class PublishTargetTests(unittest.TestCase):
         self.assertEqual(result["restore_result"]["branch"], "task-demo")
 
     def test_run_publish_job_requires_explicit_success_signal_for_local_publish(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            repo_path = Path(tmpdir)
-            with (
-                mock.patch.object(
-                    publish_script.subprocess,
-                    "run",
-                    return_value=subprocess.CompletedProcess(
-                        args=["sg", "publish", "local"],
-                        returncode=0,
-                        stdout="build complete\n",
-                        stderr="",
-                    ),
-                ),
-                mock.patch.object(publish_script, "find_publish_cli_log_entry", return_value=None),
-            ):
-                result = publish_script.run_publish_job(
-                    {
-                        "repo_key": "demo-repo",
-                        "repo_path": repo_path,
-                        "command": ["sg", "publish", "local"],
-                    }
-                )
+        result = self._run_publish_job(
+            ["sg", "publish", "local"],
+            stdout="build complete\n",
+        )
 
         self.assertEqual(result["status"], "uncertain")
         self.assertIn("no explicit success signal", result["error_message"])
 
-    def test_run_publish_job_accepts_explicit_terminal_success_for_local_publish(self) -> None:
+    def test_run_publish_job_backend_success_requires_explicit_signal(self) -> None:
+        cases = [
+            ("build complete\n", None, "uncertain", "no explicit success signal"),
+            ("尚未发布成功\n", None, "uncertain", "no explicit success signal"),
+            ("发布成功\n", None, "success", None),
+            ("", {"status": "success"}, "success", None),
+        ]
+        for stdout, log_entry, expected_status, expected_error in cases:
+            with self.subTest(stdout=stdout, log_entry=log_entry):
+                result = self._run_publish_job(
+                    ["sg", "publish", "jenkins"],
+                    stdout=stdout,
+                    log_entry=log_entry,
+                )
+                self.assertEqual(result["status"], expected_status)
+                if expected_error:
+                    self.assertIn(expected_error, result["error_message"])
+
+    def test_main_continues_other_repos_when_one_preflight_fails(self) -> None:
+        success_result = {
+            "repo_key": "good",
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+            "status": "success",
+            "error_message": "",
+            "runtime_prepare": {"skipped": True},
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            returncode, text = self._run_publish_main(
+                tmp,
+                targets=["ghost", "bad", "weird", "good"],
+                task_meta={
+                    "repos": [
+                        {"key": "bad", "branch": "main"},
+                        {"key": "weird", "branch": "main"},
+                        {"key": "good", "branch": "main"},
+                    ]
+                },
+                repositories_cfg={
+                    "repositories": [
+                        {"key": "weird", "path": "weird", "notes": "unknown"},
+                        {"key": "good", "path": "good", "notes": "PC前端"},
+                    ]
+                },
+                run_publish_job=lambda _job: success_result,
+                classify_repo_publish_kind=lambda repo_cfg: None
+                if str(repo_cfg.get("key") or "") == "weird"
+                else "pc_frontend",
+            )
+
+        self.assertEqual(returncode, 1)
+        self.assertIn("[FAIL] ghost", text)
+        self.assertIn("[FAIL] bad", text)
+        self.assertIn("[FAIL] weird", text)
+        self.assertIn("[OK] good", text)
+        self.assertIn("target_failed=1", text)
+        self.assertIn("preflight_failed=2", text)
+
+    def test_run_publish_job_reports_failure_when_command_cannot_start(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir)
-            with (
-                mock.patch.object(
-                    publish_script.subprocess,
-                    "run",
-                    return_value=subprocess.CompletedProcess(
-                        args=["sg", "publish", "local"],
-                        returncode=0,
-                        stdout="发布成功\n",
-                        stderr="",
-                    ),
-                ),
-                mock.patch.object(publish_script, "find_publish_cli_log_entry", return_value=None),
+            with mock.patch.object(
+                publish_script.subprocess,
+                "run",
+                side_effect=OSError("command not found"),
             ):
                 result = publish_script.run_publish_job(
                     {
@@ -2124,34 +2305,144 @@ class PublishTargetTests(unittest.TestCase):
                     }
                 )
 
-        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("failed to start", str(result["error_message"]))
 
-    def test_run_publish_job_accepts_english_success_signal_for_local_publish(self) -> None:
+    def test_main_continues_other_repos_when_current_branch_read_fails(self) -> None:
+        success_result = {
+            "repo_key": "good",
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+            "status": "success",
+            "error_message": "",
+            "runtime_prepare": {"skipped": True},
+        }
+
+        def read_current_branch(repo_path: Path) -> str:
+            if repo_path.name == "broken":
+                raise subprocess.CalledProcessError(128, ["git", "branch", "--show-current"])
+            return "main"
+
         with tempfile.TemporaryDirectory() as tmpdir:
-            repo_path = Path(tmpdir)
-            for output in ["success\n", "status: success\n", '{"status":"success"}\n']:
-                with (
-                    mock.patch.object(
-                        publish_script.subprocess,
-                        "run",
-                        return_value=subprocess.CompletedProcess(
-                            args=["sg", "publish", "local"],
-                            returncode=0,
-                            stdout=output,
-                            stderr="",
-                        ),
-                    ),
-                    mock.patch.object(publish_script, "find_publish_cli_log_entry", return_value=None),
-                ):
-                    result = publish_script.run_publish_job(
-                        {
-                            "repo_key": "demo-repo",
-                            "repo_path": repo_path,
-                            "command": ["sg", "publish", "local"],
-                        }
-                    )
+            tmp = Path(tmpdir)
+            returncode, text = self._run_publish_main(
+                tmp,
+                targets=["broken", "good"],
+                task_meta={
+                    "repos": [
+                        {"key": "broken", "branch": "main"},
+                        {"key": "good", "branch": "main"},
+                    ]
+                },
+                repositories_cfg={
+                    "repositories": [
+                        {"key": "broken", "path": "broken", "notes": "PC前端"},
+                        {"key": "good", "path": "good", "notes": "PC前端"},
+                    ]
+                },
+                run_publish_job=lambda _job: success_result,
+                resolve_repo_path=lambda _root, _task_id, repo_meta: tmp / str(repo_meta["key"]),
+                read_current_branch=read_current_branch,
+            )
 
-                self.assertEqual(result["status"], "success", output)
+        self.assertEqual(returncode, 1)
+        self.assertIn("[FAIL] broken", text)
+        self.assertIn("[OK] good", text)
+        self.assertIn("preflight_failed=1", text)
+
+    def test_main_continues_other_repos_when_node_version_resolution_fails(self) -> None:
+        success_result = {
+            "repo_key": "good",
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+            "status": "success",
+            "error_message": "",
+            "runtime_prepare": {"skipped": True},
+        }
+
+        def resolve_node_version(repo_path: Path) -> str | None:
+            if repo_path.name == "broken":
+                raise ValueError("invalid package.json")
+            return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            returncode, text = self._run_publish_main(
+                tmp,
+                targets=["broken", "good"],
+                task_meta={
+                    "repos": [
+                        {"key": "broken", "branch": "main"},
+                        {"key": "good", "branch": "main"},
+                    ]
+                },
+                repositories_cfg={
+                    "repositories": [
+                        {"key": "broken", "path": "broken", "notes": "PC前端"},
+                        {"key": "good", "path": "good", "notes": "PC前端"},
+                    ]
+                },
+                run_publish_job=lambda _job: success_result,
+                resolve_repo_path=lambda _root, _task_id, repo_meta: tmp / str(repo_meta["key"]),
+                resolve_node_version_for_repo=resolve_node_version,
+            )
+
+        self.assertEqual(returncode, 1)
+        self.assertIn("[FAIL] broken", text)
+        self.assertIn("[OK] good", text)
+        self.assertIn("preflight_failed=1", text)
+
+    def test_main_continues_other_repos_when_one_publish_job_crashes(self) -> None:
+        success_result = {
+            "repo_key": "good",
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+            "status": "success",
+            "error_message": "",
+            "runtime_prepare": {"skipped": True},
+        }
+
+        def run_publish_job(job: dict[str, object]) -> dict[str, object]:
+            if job["repo_key"] == "crash":
+                raise RuntimeError("unexpected publish failure")
+            return success_result
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            returncode, text = self._run_publish_main(
+                tmp,
+                targets=["crash", "good"],
+                task_meta={
+                    "repos": [
+                        {"key": "crash", "branch": "main"},
+                        {"key": "good", "branch": "main"},
+                    ]
+                },
+                repositories_cfg={
+                    "repositories": [
+                        {"key": "crash", "path": "crash", "notes": "PC前端"},
+                        {"key": "good", "path": "good", "notes": "PC前端"},
+                    ]
+                },
+                run_publish_job=run_publish_job,
+            )
+
+        self.assertEqual(returncode, 1)
+        self.assertIn("[FAILED] crash", text)
+        self.assertIn("[OK] good", text)
+        self.assertIn("failed=1", text)
+
+    def test_run_publish_job_accepts_explicit_local_success_signals(self) -> None:
+        for output in ["发布成功\n", "success\n", "status: success\n", '{"status":"success"}\n']:
+            with self.subTest(output=output):
+                result = self._run_publish_job(
+                    ["sg", "publish", "local"],
+                    stdout=output,
+                )
+                self.assertEqual(result["status"], "success")
 
     def test_run_publish_job_wraps_local_publish_with_repo_node_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2324,32 +2615,11 @@ class PublishTargetTests(unittest.TestCase):
         self.assertIn("package-lock.json", "; ".join(result["runtime_prepare"]["warnings"]))
 
     def test_run_publish_job_accepts_matched_cli_log_success_without_terminal_signal(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            repo_path = Path(tmpdir)
-            with (
-                mock.patch.object(
-                    publish_script.subprocess,
-                    "run",
-                    return_value=subprocess.CompletedProcess(
-                        args=["sg", "publish", "local"],
-                        returncode=0,
-                        stdout="build complete\n",
-                        stderr="",
-                    ),
-                ),
-                mock.patch.object(
-                    publish_script,
-                    "find_publish_cli_log_entry",
-                    return_value={"status": "success"},
-                ),
-            ):
-                result = publish_script.run_publish_job(
-                    {
-                        "repo_key": "demo-repo",
-                        "repo_path": repo_path,
-                        "command": ["sg", "publish", "local"],
-                    }
-                )
+        result = self._run_publish_job(
+            ["sg", "publish", "local"],
+            stdout="build complete\n",
+            log_entry={"status": "success"},
+        )
 
         self.assertEqual(result["status"], "success")
         self.assertIsNone(result["error_message"])
@@ -2433,6 +2703,39 @@ class SyncTaskTests(unittest.TestCase):
 
 
 class CleanDevelopTaskTests(unittest.TestCase):
+    def _run_clean_develop_main(
+        self,
+        tmp: Path,
+        *,
+        targets: list[str],
+        task_meta: dict[str, object],
+        repositories_cfg: dict[str, object],
+        run_clean_develop_job,
+        resolve_repo_path=None,
+    ) -> tuple[int, str]:
+        resolve_repo_path = resolve_repo_path or (lambda _root, _task_id, _repo_meta: tmp)
+        with (
+            mock.patch.object(
+                clean_develop_script,
+                "load_yaml",
+                side_effect=[
+                    {"docs_root": str(tmp / "docs"), "tasks_root": str(tmp / "tasks")},
+                    repositories_cfg,
+                ],
+            ),
+            mock.patch.object(
+                clean_develop_script,
+                "load_task_meta",
+                return_value=(tmp / "meta.yaml", task_meta),
+            ),
+            mock.patch.object(clean_develop_script, "resolve_repo_path", side_effect=resolve_repo_path),
+            mock.patch.object(clean_develop_script, "run_clean_develop_job", side_effect=run_clean_develop_job),
+            mock.patch.object(sys, "argv", ["clean_develop_task_workspace.py", "2026-11-13-demo", *targets]),
+            contextlib.redirect_stdout(io.StringIO()) as out,
+        ):
+            returncode = clean_develop_script.main()
+        return returncode, out.getvalue()
+
     def test_run_clean_develop_job_deletes_only_local_develop(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir) / "repo"
@@ -2577,6 +2880,84 @@ class CleanDevelopTaskTests(unittest.TestCase):
 
             cleaned_repo_keys = {call.args[0]["repo_key"] for call in run_clean.call_args_list}
             self.assertEqual(cleaned_repo_keys, {"producer-backend", "pf-mproducer-supplier"})
+
+    def test_clean_develop_main_continues_after_target_and_path_failures(self) -> None:
+        def resolve_repo_path(_root: Path, _task_id: str, repo_meta: dict[str, object]) -> Path:
+            if repo_meta["key"] == "broken":
+                raise ValueError("invalid repo_dir")
+            return tmp / str(repo_meta["key"])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            returncode, text = self._run_clean_develop_main(
+                tmp,
+                targets=["ghost", "broken", "good"],
+                task_meta={
+                    "repos": [
+                        {"key": "broken", "branch": "main"},
+                        {"key": "good", "branch": "main"},
+                    ]
+                },
+                repositories_cfg={
+                    "repositories": [
+                        {"key": "broken", "path": "broken", "notes": "PC前端"},
+                        {"key": "good", "path": "good", "notes": "PC前端"},
+                    ]
+                },
+                run_clean_develop_job=lambda job: {
+                    "repo_key": job["repo_key"],
+                    "status": "ok",
+                    "reason": "deleted local develop branch",
+                    "stdout": "",
+                    "stderr": "",
+                },
+                resolve_repo_path=resolve_repo_path,
+            )
+
+        self.assertEqual(returncode, 1)
+        self.assertIn("[FAIL] ghost", text)
+        self.assertIn("[FAIL] broken", text)
+        self.assertIn("[OK] good", text)
+        self.assertIn("target_failed=1", text)
+        self.assertIn("preflight_failed=1", text)
+
+    def test_clean_develop_main_reports_worker_crash_and_keeps_other_repos(self) -> None:
+        def run_clean_develop_job(job: dict[str, object]) -> dict[str, object]:
+            if job["repo_key"] == "crash":
+                raise RuntimeError("unexpected clean failure")
+            return {
+                "repo_key": job["repo_key"],
+                "status": "ok",
+                "reason": "deleted local develop branch",
+                "stdout": "",
+                "stderr": "",
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            returncode, text = self._run_clean_develop_main(
+                tmp,
+                targets=["crash", "good"],
+                task_meta={
+                    "repos": [
+                        {"key": "crash", "branch": "main"},
+                        {"key": "good", "branch": "main"},
+                    ]
+                },
+                repositories_cfg={
+                    "repositories": [
+                        {"key": "crash", "path": "crash", "notes": "PC前端"},
+                        {"key": "good", "path": "good", "notes": "PC前端"},
+                    ]
+                },
+                run_clean_develop_job=run_clean_develop_job,
+            )
+
+        self.assertEqual(returncode, 1)
+        self.assertIn("[FAILED] crash", text)
+        self.assertIn("[OK] good", text)
+        self.assertIn("crashed", text)
+        self.assertIn("failed=1", text)
 
 
 class TaskPortalTests(unittest.TestCase):

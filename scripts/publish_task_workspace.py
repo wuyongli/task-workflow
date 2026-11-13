@@ -20,7 +20,7 @@ from task_workflow_lib import (
     read_current_branch,
     resolve_node_version_for_repo,
     resolve_publish_command,
-    resolve_requested_repo_keys,
+    resolve_requested_repo_keys_or_aliases_with_failures,
     resolve_repo_path,
     uses_patch_node_frontend_runtime,
 )
@@ -33,6 +33,8 @@ PUBLISH_SUCCESS_OUTPUT_PATTERNS = [
     re.compile(r'(?i)"status"\s*:\s*"success"'),
     re.compile(r"(?im)^\s*(?:status\s*[:=]\s*)?success(?:ful(?:ly)?)?\s*[.!！。]*\s*$"),
 ]
+
+PUBLISH_SUCCESS_NEGATION_PATTERN = re.compile(r"(?:未|不|没|无法|失败|不能|尚未|并未|没有|未能).{0,8}发布成功")
 
 
 def is_sg_publish_command(command: list[str], subcommand: str | None = None) -> bool:
@@ -119,20 +121,22 @@ def classify_publish_result(
     if "conflicts:" in combined_lower or "you are still merging" in combined_lower:
         return "failed", "publish output reported merge conflicts"
 
-    is_local_publish = is_sg_publish_command(command, "local")
     explicit_success_output = has_explicit_publish_success_signal(combined)
-    if is_local_publish:
-        if explicit_success_output:
-            return "success", None
-        if log_status == "success":
-            return "success", None
-        return "uncertain", "no explicit success signal from sg publish local"
+    if explicit_success_output or log_status == "success":
+        return "success", None
+    if is_sg_publish_command(command):
+        return "uncertain", "no explicit success signal from sg publish command"
 
     return "success", None
 
 
 def has_explicit_publish_success_signal(output: str) -> bool:
-    return any(pattern.search(output) for pattern in PUBLISH_SUCCESS_OUTPUT_PATTERNS)
+    for line in output.splitlines():
+        if PUBLISH_SUCCESS_NEGATION_PATTERN.search(line):
+            continue
+        if any(pattern.search(line) for pattern in PUBLISH_SUCCESS_OUTPUT_PATTERNS):
+            return True
+    return False
 
 
 def build_publish_execution_command(command: list[str], node_version: str | None = None) -> list[str]:
@@ -327,7 +331,16 @@ def run_publish_job(job: dict[str, object]) -> dict[str, object]:
         )
 
     started_at_ms = int(time.time() * 1000)
-    result = subprocess.run(execution_command, cwd=repo_path, text=True, capture_output=True)
+    try:
+        result = subprocess.run(execution_command, cwd=repo_path, text=True, capture_output=True)
+    except OSError as exc:
+        return failed_publish_job_result(
+            job,
+            repo_path,
+            execution_command,
+            f"publish command failed to start: {exc}",
+            runtime_prepare,
+        )
     ended_at_ms = int(time.time() * 1000)
     log_entry = find_publish_cli_log_entry(repo_path, command, started_at_ms, ended_at_ms)
     status, error_message = classify_publish_result(command, result.returncode, result.stdout, result.stderr, log_entry)
@@ -367,7 +380,11 @@ def run_publish_job(job: dict[str, object]) -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Publish selected task repos with task-workflow defaults.")
     parser.add_argument("task_id", help="Task id such as 2026-06-03-部门转货")
-    parser.add_argument("targets", nargs="*", help="Publish targets such as 后端 / 前端 / 手机前端 / PC前端")
+    parser.add_argument(
+        "targets",
+        nargs="*",
+        help="Publish targets such as repo key / 后端 / 前端 / 手机前端 / PC前端",
+    )
     parser.add_argument("--config-root", type=Path, default=DEFAULT_CONFIG_ROOT)
     args = parser.parse_args()
 
@@ -395,40 +412,85 @@ def main() -> int:
         if isinstance(row, dict) and row.get("key")
     }
     bound_repo_keys = list(repo_meta_by_key.keys())
-    requested_repo_keys = resolve_requested_repo_keys(args.targets, bound_repo_keys, repo_cfg_by_key)
+    requested_repo_keys, target_failures = resolve_requested_repo_keys_or_aliases_with_failures(
+        args.targets, bound_repo_keys, repo_cfg_by_key
+    )
     jobs: list[dict[str, object]] = []
+    preflight_failures: list[dict[str, str]] = []
 
     for repo_key in requested_repo_keys:
         repo_meta = repo_meta_by_key.get(repo_key)
         if repo_meta is None:
-            raise ValueError(f"repo {repo_key} is not bound to task {args.task_id}")
+            preflight_failures.append(
+                {"repo_key": repo_key, "reason": f"repo {repo_key} is not bound to task {args.task_id}"}
+            )
+            continue
 
         repo_cfg = repo_cfg_by_key.get(repo_key)
         if repo_cfg is None:
-            raise ValueError(f"repo {repo_key} is not configured in repositories.yaml")
+            preflight_failures.append(
+                {"repo_key": repo_key, "reason": f"repo {repo_key} is not configured in repositories.yaml"}
+            )
+            continue
 
-        repo_path = resolve_repo_path(tasks_root, args.task_id, repo_meta)
+        try:
+            repo_path = resolve_repo_path(tasks_root, args.task_id, repo_meta)
+        except ValueError as exc:
+            preflight_failures.append(
+                {"repo_key": repo_key, "reason": f"repo {repo_key} path metadata is invalid: {exc}"}
+            )
+            continue
         recorded_branch = str(repo_meta.get("branch") or "")
-        actual_branch = read_current_branch(repo_path)
+        try:
+            actual_branch = read_current_branch(repo_path)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            preflight_failures.append(
+                {"repo_key": repo_key, "reason": f"repo {repo_key} failed to read current branch: {exc}"}
+            )
+            continue
         if actual_branch in {"missing", "not-a-git-repo", "detached"}:
-            raise ValueError(f"repo {repo_key} is not publishable: {actual_branch}")
+            preflight_failures.append(
+                {"repo_key": repo_key, "reason": f"repo {repo_key} is not publishable: {actual_branch}"}
+            )
+            continue
         status_short = read_git_text(repo_path, "status", "--porcelain")
         publish_develop_retry = actual_branch == "develop"
         publish_conflict_retry = publish_develop_retry and (
             merge_head_exists(repo_path) or bool(parse_unmerged_files(status_short))
         )
         if recorded_branch and actual_branch != recorded_branch and not publish_develop_retry:
-            raise ValueError(
-                f"repo {repo_key} current branch is {actual_branch}, expected recorded branch {recorded_branch}"
+            preflight_failures.append(
+                {
+                    "repo_key": repo_key,
+                    "reason": (
+                        f"repo {repo_key} current branch is {actual_branch}, "
+                        f"expected recorded branch {recorded_branch}"
+                    ),
+                }
             )
+            continue
 
-        command = resolve_publish_command(repo_cfg)
         target_kind = classify_repo_publish_kind(repo_cfg)
-        node_version = (
-            resolve_node_version_for_repo(repo_path)
-            if target_kind in {"mobile_frontend", "pc_frontend"}
-            else None
-        )
+        if target_kind is None:
+            preflight_failures.append(
+                {
+                    "repo_key": repo_key,
+                    "reason": f"repo {repo_key} has no supported publish command mapping",
+                }
+            )
+            continue
+        command = resolve_publish_command(repo_cfg)
+        try:
+            node_version = (
+                resolve_node_version_for_repo(repo_path)
+                if target_kind in {"mobile_frontend", "pc_frontend"}
+                else None
+            )
+        except (OSError, ValueError) as exc:
+            preflight_failures.append(
+                {"repo_key": repo_key, "reason": f"repo {repo_key} failed to resolve node version: {exc}"}
+            )
+            continue
         print(f"[PLAN] {repo_key}")
         print(f"  path: {repo_path}")
         print(f"  branch: {actual_branch}")
@@ -456,7 +518,17 @@ def main() -> int:
             }
         )
 
+    for failure in [*target_failures, *preflight_failures]:
+        label = failure.get("repo_key") or failure.get("target") or "<unknown>"
+        print(f"[FAIL] {label}: {failure['reason']}")
+
     if not jobs:
+        if target_failures or preflight_failures:
+            print(
+                f"[SUMMARY] target_failed={len(target_failures)} "
+                f"preflight_failed={len(preflight_failures)}"
+            )
+            return 1
         print("no publish jobs resolved")
         return 0
 
@@ -466,7 +538,15 @@ def main() -> int:
         future_map = {executor.submit(run_publish_job, job): job for job in jobs}
         for future in as_completed(future_map):
             job = future_map[future]
-            result = future.result()
+            try:
+                result = future.result()
+            except Exception as exc:
+                result = failed_publish_job_result(
+                    job,
+                    Path(str(job["repo_path"])),
+                    list(job["command"]),
+                    f"publish job crashed: {exc}",
+                )
             repo_key = str(result["repo_key"])
             returncode = int(result["returncode"])
             stdout = str(result["stdout"] or "")
@@ -560,9 +640,14 @@ def main() -> int:
     restore_failed = [item for item in results if str(item.get("status") or "") == "restore_failed"]
     print(
         f"[SUMMARY] success={len(success)} failed={len(failed)} uncertain={len(uncertain)} "
-        f"conflict={len(conflicts)} restore_failed={len(restore_failed)}"
+        f"conflict={len(conflicts)} restore_failed={len(restore_failed)} "
+        f"target_failed={len(target_failures)} preflight_failed={len(preflight_failures)}"
     )
-    return 1 if failed or uncertain or conflicts or restore_failed else 0
+    return (
+        1
+        if failed or uncertain or conflicts or restore_failed or target_failures or preflight_failures
+        else 0
+    )
 
 
 if __name__ == "__main__":
